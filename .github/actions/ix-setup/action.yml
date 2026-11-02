@@ -1,0 +1,149 @@
+# The ix-runner counterpart of `common-setup`.
+#
+# `common-setup` does five things, and on an ix runner four of them are
+# already true before the job starts and the fifth is impossible:
+#
+#   1. install Nix          -> the machine IS NixOS; nix 2.34 is in the image.
+#   2. `experimental-features = nix-command flakes` in /etc/nix/nix.conf
+#                           -> set by the runner template's module.nix.
+#   3. add a substituter    -> the template pins `trusted-users = ["root"]`,
+#                              so job code cannot add one at runtime, by
+#                              design. cache.flox.dev is baked into the image
+#                              instead (ci/ix-runner-template/flox.nix).
+#   4. `sudo tee -a /etc/nix/nix.conf`
+#                           -> there is no sudo, and /etc is a read-only
+#                              store symlink farm.
+#   5. join Tailscale and pick a remote builder
+#                           -> the runner is the builder.
+#
+# What is genuinely missing is a GitHub credential for flake input fetches.
+# flox's lock names six GitHub inputs, and `nix` resolves each through
+# api.github.com. Unauthenticated that is 60 requests/hour/IP, shared across
+# every concurrent lane on the pool, and the failure mode is a rate-limit
+# error in the middle of an otherwise green run. The job's own ephemeral
+# `GITHUB_TOKEN` costs nothing and raises the ceiling to 1000/hour.
+#
+# `~/.config/nix/nix.conf`, not `/etc/nix/nix.conf`: flake input fetching
+# happens in the nix CLIENT, which runs as the `runner` user, so a user-level
+# setting is both sufficient and the only one writable here. `access-tokens`
+# is a client-side setting and is honoured for untrusted users.
+name: "Setup (ix runner)"
+description: "Prepare an ix self-hosted runner for a flox CI job."
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Report the machine"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+        echo "::group::ix runner facts"
+        echo "runner name : ${RUNNER_NAME:-<unset>}"
+        echo "nix         : $(nix --version)"
+        echo "nproc       : $(nproc)"
+        free -h | head -2 || true
+        df -h /nix /tmp || true
+        echo "--- effective nix.conf ---"
+        nix config show 2>/dev/null | grep -E '^(substituters|trusted-public-keys|max-jobs|cores|experimental-features) ' || true
+        echo "::endgroup::"
+
+    - name: "Authenticate nix flake fetches"
+      shell: "bash"
+      env:
+        # The job-scoped, ephemeral token GitHub already hands this run. It is
+        # not a repository secret and dies with the job.
+        NIX_ACCESS_TOKEN: "${{ github.token }}"
+      run: |
+        set -euo pipefail
+        umask 077
+        mkdir -p "$HOME/.config/nix"
+        # Rewritten, not appended: the seed disk carries $HOME across jobs, so
+        # appending would accumulate one dead token per job of the lineage.
+        # The pool template normally supplies these caches system-wide. Keep
+        # them in the client config too so a seed made from the platform
+        # template still uses the Flox closure instead of rebuilding it.
+        # The platform template currently points at an internal mirror that
+        # is unreachable from these runners. Keep this job config explicit so
+        # Nix does not spend 15 seconds x 5 attempts on every cache probe and
+        # then compile the whole toolchain from source.
+        # Keep the daemon's fan-out bounded while giving each derivation the
+        # 32-core build budget available on the Graviton guest. Two concurrent
+        # derivations leave memory headroom for the runner and test processes.
+        printf '%s\n' \
+          "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
+          "substituters = https://cache.flox.dev https://cache.nixos.org" \
+          "trusted-public-keys = flox-cache-public-1:7F4OyH7ZCnFhcze3fJdfyXYLQw/aV7GEed86nQ7IsOs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" \
+          "connect-timeout = 5" \
+          "download-attempts = 2" \
+          "max-jobs = 2" \
+          "cores = 32" \
+          > "$HOME/.config/nix/nix.conf"
+
+        if ! nix config show 2>/dev/null | grep -q 'cache\.flox\.dev'; then
+          echo "::error title=Flox cache is unavailable::The ix runner did not accept cache.flox.dev in its client configuration; refusing a source build." >&2
+          exit 1
+        fi
+
+        nix config show | grep -E '^(max-jobs|cores) ' || {
+          echo "::error title=ix Nix parallelism is not pinned::The runner ignored the two-job, 32-core daemon settings; refusing an under-sized build." >&2
+          exit 1
+        }
+
+    - name: "Backfill hosted-image PATH parity"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+
+        # GitHub's ubuntu images ship util-linux on PATH. The ix runner
+        # template's base userland does not, and flox notices: the
+        # manifest-build test `providers::build::nef_tests::
+        # manifest_builds_can_depend_on_nef` runs a generated build.bash that
+        # pipes through `rev`, which dies with
+        #
+        #   build.bash: line 2: rev: command not found
+        #   make: *** [flox-build.mk:901: ...bar-0.0.0] Error 127
+        #
+        # taking down the one failing test out of 1702 in the cli-unit lane.
+        #
+        # util-linux is already IN the guest closure - module.nix uses it for
+        # the /tmp remount unit - it is simply not on the job's PATH. So this
+        # links the binaries out of the store rather than fetching anything.
+        #
+        # Symlinking named binaries, NOT prepending util-linux's whole bin/:
+        # that directory also carries `kill`, `more`, `login` and `su`, and
+        # GITHUB_PATH PREPENDS, so exporting it wholesale would shadow
+        # coreutils for every later step in the job. Only `rev` is
+        # evidence-driven; the rest are the same class of gap (util-linux
+        # tools with no coreutils equivalent, so nothing to shadow) and are
+        # cheap insurance against the next one.
+        #
+        # SUPERSEDED by ci/ix-runner-template/flox.nix once the family layer
+        # can actually be used as the pool's template - it lists util-linux in
+        # `extraPackages`, which puts these on the unit PATH properly. Until
+        # then the pool runs the platform default template and this is the
+        # only lever. See HANDOFF.md §3.
+        shim="$RUNNER_TEMP/ix-path-shims"
+        mkdir -p "$shim"
+        for b in rev column hexdump script getopt; do
+          src=""
+          for candidate in /nix/store/*-util-linux*/bin/"$b"; do
+            if [ -x "$candidate" ]; then
+              src="$candidate"
+              break
+            fi
+          done
+          if [ -z "$src" ] && command -v "$b" >/dev/null 2>&1; then
+            src="$(command -v "$b")"
+          fi
+          if [ -n "$src" ]; then
+            ln -sf "$src" "$shim/$b"
+          fi
+        done
+
+        if [ ! -e "$shim/rev" ]; then
+          echo "::error title=No util-linux in the guest store::could not find 'rev'; refusing to start a lane that will fail with Error 127" >&2
+          exit 1
+        fi
+
+        echo "shimmed: $(ls "$shim" 2>/dev/null | tr '\n' ' ')"
+        echo "$shim" >> "$GITHUB_PATH"

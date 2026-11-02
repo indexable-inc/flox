@@ -22,6 +22,7 @@
   shfmt,
   stdenv,
   treefmt,
+  util-linux,
   writeShellScript,
   yamlfmt,
   yq,
@@ -58,6 +59,7 @@ let
       pstree
       shfmt
       treefmt
+      util-linux
       yamlfmt
       yq
     ];
@@ -128,10 +130,12 @@ mkShell (
 
       # Setup mutable paths to all internal subsystems,
       # so that they can be changed and built without restarting the shell.
+      CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+      export CARGO_TARGET_DIR
 
       # cargo built binaries
-      define_dev_env_var FLOX_BIN "''${REPO_ROOT}/target/debug/flox";
-      define_dev_env_var FLOX_ACTIVATIONS_BIN "''${REPO_ROOT}/target/debug/flox-activations";
+      define_dev_env_var FLOX_BIN "''${CARGO_TARGET_DIR}/debug/flox";
+      define_dev_env_var FLOX_ACTIVATIONS_BIN "''${CARGO_TARGET_DIR}/debug/flox-activations";
 
       # make built binaries
       define_dev_env_var BUILDENV_BIN "''${REPO_ROOT}/build/flox-buildenv/bin/buildenv";
@@ -159,8 +163,8 @@ mkShell (
 
       # Add all internal rust crates to the PATH.
       # That's `flox` itself as well as the `flox-activations` subsystem.
-      export PATH="''${REPO_ROOT}/target/debug":$PATH;
-      echo -n "''${REPO_ROOT}/target/debug:" >> "$REPO_ROOT/build/.PATH";
+      export PATH="''${CARGO_TARGET_DIR}/debug":$PATH;
+      echo -n "''${CARGO_TARGET_DIR}/debug:" >> "$REPO_ROOT/build/.PATH";
 
       # Add the flox-manpages to the manpath
       export MANPATH="''${FLOX_MANPAGES}/share/man:$MANPATH"

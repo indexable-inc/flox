@@ -21,18 +21,23 @@ concurrency:
 
 env:
   FLOX_DISABLE_METRICS: "true"
+  ON_IX: "${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository }}"
 
 jobs:
   nix-git-hooks:
     name: "Nix Git Hooks"
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 30
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["ix","arm64","ix-lints"]')) || 'ubuntu-latest' }}
+    # 30 -> 60: `pre-commit run` shells out to the devshell, and a cold ix
+    # machine realises that closure first.
+    timeout-minutes: 60
 
     steps:
       - name: "Checkout"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # SKIPPED on ix; see the note on the same step in ci.yml.
       - name: "Setup Nix"
+        if: ${{ env.ON_IX != 'true' }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -41,6 +46,10 @@ jobs:
           AWS_ACCESS_KEY_ID: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_ACCESS_KEY_ID }}"
           AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
           SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
+
+      - name: "Setup Nix (ix)"
+        if: ${{ env.ON_IX == 'true' }}
+        uses: "./.github/actions/ix-setup"
 
       - name: "Determine target branch ( PR )"
         if: ${{ github.event_name == 'pull_request' }}

@@ -132,7 +132,7 @@ writeShellScriptBin PROJECT_NAME ''
         exit 1;
       fi
       PROJECT_TESTS_DIR="$PROJECT_ROOT_DIR$PROJECT_TESTS_DIR";
-      PROJECT_PATH="$PROJECT_ROOT_DIR/target/debug";
+      PROJECT_PATH="''${CARGO_TARGET_DIR:-$PROJECT_ROOT_DIR/target}/debug";
     ;;
   esac
   export PROJECT_TESTS_DIR;
