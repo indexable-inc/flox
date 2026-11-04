@@ -496,9 +496,12 @@ EOF
 
   bash -c "$FLOX_BIN containerize --tag $TAG --runtime podman" 3>&- # TODO: why close FD 3?
 
-  run podman run --rm "test:$TAG" 'whoami'
+  run podman run --rm "test:$TAG" sh -c 'id -un; id -gn'
   assert_success
-  assert_output --partial "foo"
+  assert_output - <<EOF
+foo
+bar
+EOF
 
   run bash -c "podman inspect test:$TAG | jq '.[0].Config | .User'"
   assert_success

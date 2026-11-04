@@ -84,56 +84,6 @@
           curl-brotli-fixed = prev.curl.override { brotli = final.brotli-fixed; };
           gitMinimal-brotli-fixed = prev.gitMinimal.override { curl = final.curl-brotli-fixed; };
 
-          pythonPackagesExtensions = (prev.pythonPackagesExtensions or []) ++ [
-            (python-final: python-prev: {
-              # Sphinx's localhost linkcheck tests share one test server and
-              # are racy under pytest-xdist. Run the complete suite serially;
-              # no test is removed.
-              sphinx = python-prev.sphinx.overrideAttrs (old: {
-                pytestFlagsArray = (old.pytestFlagsArray or []) ++ [ "-n0" ];
-              });
-            })
-          ];
-
-          # GCC 15 promotes two harmless GHC RTS warnings to errors while
-          # bootstrapping GHC 9.10.3 on aarch64. Keep the compiler checks and
-          # the GHC build enabled, but make those warning classes non-fatal and
-          # remove the fortify flags that trigger the no-optimization warning.
-          haskell = prev.haskell // {
-            packageOverrides = final.lib.composeExtensions
-              (prev.haskell.packageOverrides or (_: _: {}))
-              (haskell-final: haskell-prev: {
-                fast-logger = haskell-prev.fast-logger.overrideAttrs (old: {
-                  postPatch = (old.postPatch or "") + ''
-                    substituteInPlace test/FastLoggerSpec.hs \
-                      --replace-fail 'dst `shouldBe` src' \
-                                     'BS.lines dst `shouldBe` BS.lines src'
-                  '';
-                });
-                ghc = haskell-prev.ghc.overrideAttrs (old:
-                  final.lib.optionalAttrs
-                    (old.pname != "ghc-binary" && !(final.lib.hasPrefix "ghc-binary-" old.pname))
-                    {
-                      hardeningDisable = (old.hardeningDisable or []) ++ [ "fortify" ];
-                      postPatch = (old.postPatch or "") + ''
-                        sed -i '/bool doingLDVProfiling(void);/i\
-                        #if defined(__GNUC__)\
-                        #pragma GCC diagnostic push\
-                        #pragma GCC diagnostic ignored "-Wredundant-decls"\
-                        #endif' rts/include/rts/storage/ClosureMacros.h
-                        sed -i '/bool doingErasProfiling(void);/a\
-                        #if defined(__GNUC__)\
-                        #pragma GCC diagnostic pop\
-                        #endif' rts/include/rts/storage/ClosureMacros.h
-                      '';
-                      configureFlags = (old.configureFlags or []) ++ [
-                        "CFLAGS=-Wno-error=redundant-decls -Wno-error=cpp"
-                      ];
-                    }
-                );
-              });
-          };
-
         })
         inputs.fenix.overlays.default
       ];
@@ -309,6 +259,9 @@
         };
         ca-roots = pkgs.callPackage ./checks/ca-roots.nix {
           stockCacert = nixpkgs.legacyPackages.${system}.cacert;
+        };
+        dev-tool-cache = pkgs.callPackage ./checks/dev-tool-cache.nix {
+          stockPkgs = nixpkgs.legacyPackages.${system};
         };
       }) pkgsContext;
 
