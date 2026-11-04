@@ -179,10 +179,9 @@ mkShell (
       # Add the flox-manpages to the manpath
       export MANPATH="''${FLOX_MANPAGES}/share/man:$MANPATH"
 
-      # configure the nix-plugin meson build
-      meson setup --reconfigure --wipe \
-      --prefix "''${REPO_ROOT}/build/nix-plugins" \
-      "''${REPO_ROOT}/nix-plugins" "''${REPO_ROOT}/nix-plugins/builddir";
+      bash ${../configure-nix-plugins.sh} ${stdenv.cc} \
+        "''${REPO_ROOT}/nix-plugins" "''${REPO_ROOT}/nix-plugins/builddir" \
+        "''${REPO_ROOT}/build/nix-plugins";
 
       echo;
       echo "run 'just build' to build flox and all its subsystems";

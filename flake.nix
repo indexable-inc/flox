@@ -263,6 +263,7 @@
         dev-tool-cache = pkgs.callPackage ./checks/dev-tool-cache.nix {
           stockPkgs = nixpkgs.legacyPackages.${system};
         };
+        meson-reuse = pkgs.callPackage ./checks/meson-reuse.nix { };
       }) pkgsContext;
 
       # ------------------------------------------------------------------------ #
