@@ -179,8 +179,7 @@ impl EventsBuffer {
         }))
     }
 
-    pub(crate) fn is_expired(&self, expiry: Duration) -> bool {
-        let now = OffsetDateTime::now_utc();
+    pub(crate) fn is_expired(&self, expiry: Duration, now: OffsetDateTime) -> bool {
         self.oldest_timestamp()
             .map(|oldest| now - oldest > expiry)
             .unwrap_or(false)
