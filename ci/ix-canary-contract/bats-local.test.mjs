@@ -27,10 +27,10 @@ printf '%s\\n' "$@" > "$NIX_ARGUMENTS"
 if [ "$NIX_STATUS" -ne 0 ]; then exit "$NIX_STATUS"; fi
 printf 'TESTS_DIR: %s\\n' "$TEST_REPORT_DIRECTORY"
 `, {mode: 0o755});
-    const env = {...process.env, PATH: `${bin}:${process.env.PATH}`, MATRIX_SYSTEM: 'aarch64-linux', MATRIX_TEST_TAGS: tags, NIX_ARGUMENTS: argumentsPath, NIX_STATUS: String(nixStatus), TEST_REPORT_DIRECTORY: tests};
+    const env = {...process.env, PATH: `${bin}:${process.env.PATH}`, NOSYSBASHRC: '1', MATRIX_SYSTEM: 'aarch64-linux', MATRIX_TEST_TAGS: tags, NIX_ARGUMENTS: argumentsPath, NIX_STATUS: String(nixStatus), TEST_REPORT_DIRECTORY: tests};
     delete env.BASH_ENV;
     delete env.ENV;
-    const result = spawnSync('bash', [launcher], {cwd: checkout, env, encoding: 'utf8'});
+    const result = spawnSync('bash', ['--noprofile', '--norc', launcher], {cwd: checkout, env, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL'});
     assert.equal(result.error, undefined);
     const reportPath = join(checkout, 'report.xml');
     return {status: result.status, stderr: result.stderr, args: readFileSync(argumentsPath, 'utf8').trimEnd().split('\n'), report: existsSync(reportPath) ? readFileSync(reportPath, 'utf8') : null};
