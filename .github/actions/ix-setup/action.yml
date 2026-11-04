@@ -57,6 +57,11 @@ runs:
         set -euo pipefail
         umask 077
         mkdir -p "$HOME/.config/nix"
+        # Read cache declarations without evaluating the development shell.
+        # The CI dependency cache belongs to the flake alongside its keys.
+        cache_config="$(nix eval --json --file flake.nix nixConfig)"
+        extra_caches="$(jq -er '."extra-substituters" | select(type == "array" and length > 0) | join(" ")' <<< "$cache_config")"
+        extra_keys="$(jq -er '."extra-trusted-public-keys" | select(type == "array" and length > 0) | join(" ")' <<< "$cache_config")"
         # Rewritten, not appended: the seed disk carries $HOME across jobs, so
         # appending would accumulate one dead token per job of the lineage.
         # The pool template normally supplies these caches system-wide. Keep
@@ -71,8 +76,8 @@ runs:
         # derivations leave memory headroom for the runner and test processes.
         printf '%s\n' \
           "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
-          "substituters = https://cache.flox.dev https://cache.nixos.org" \
-          "trusted-public-keys = flox-cache-public-1:7F4OyH7ZCnFhcze3fJdfyXYLQw/aV7GEed86nQ7IsOs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" \
+          "substituters = https://cache.nixos.org $extra_caches" \
+          "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= $extra_keys" \
           "connect-timeout = 5" \
           "download-attempts = 2" \
           "max-jobs = 2" \
