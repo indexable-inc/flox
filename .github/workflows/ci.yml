@@ -683,15 +683,11 @@ jobs:
 
     needs:
       - "scope"
-      - "nix-build"
 
-    # See `scope`. Spelled out rather than left implicit because without a
-    # status-check function GitHub adds `success()` over *every* `needs`:
-    # `nix-build` succeeding is the only precondition, exactly as before, and a
-    # skipped `nix-build` (fork PR) still skips this job.
-    #
-    # Default-branch pushes refresh the ARM64 bats seed after the build lane.
-    if: ${{ !cancelled() && needs.nix-build.result == 'success' }}
+    # Each ARM64 ix VM builds its own flox-cli-tests closure with nix run.
+    # The separate build job publishes no outputs on this fork and remains
+    # an independent workflow check. Keep its same-repository trust guard.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
     strategy:
       fail-fast: false
