@@ -31,8 +31,13 @@ function runStep(name, env = {}) {
     // Record the external command boundary; execute the workflow's own selection logic.
     writeFileSync(join(scratch, 'nix'), '#!/bin/bash\nprintf "%s\\n" "$@" > "$ARGUMENTS"\nexit "${NIX_STATUS:-0}"\n', {mode: 0o755});
     writeFileSync(join(scratch, 'git'), '#!/bin/bash\nset -eu\n[[ "$1" == rev-parse ]]\ncase "$2" in target) echo target-sha;; head) echo head-sha;; *) exit 1;; esac\n', {mode: 0o755});
-    const result = spawnSync('bash', ['-c', step(name).run], {
-      encoding: 'utf8', env: {...process.env, PATH: `${scratch}:${process.env.PATH}`, ARGUMENTS: join(scratch, 'args'), GITHUB_ENV: join(scratch, 'env'), ...env},
+    const shellEnv = {...process.env, PATH: `${scratch}:${process.env.PATH}`, ARGUMENTS: join(scratch, 'args'), GITHUB_ENV: join(scratch, 'env'), ...env};
+    // NixOS's system bashrc can replace PATH and escape the command mocks.
+    shellEnv.NOSYSBASHRC = '1';
+    delete shellEnv.BASH_ENV;
+    delete shellEnv.ENV;
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-c', step(name).run], {
+      encoding: 'utf8', env: shellEnv, timeout: 5000, killSignal: 'SIGKILL',
     });
     assert.equal(result.error, undefined);
     return {status: result.status, stderr: result.stderr,
@@ -82,4 +87,16 @@ test('failed hooks fail the warmup', () => {
 test('unknown events cannot select lint files', () => {
   assert.equal(condition(job.if, 'repository_dispatch'), 'false');
   assert.equal(runStep('Run Nix Git Hooks', {EVENT_NAME: 'repository_dispatch'}).status, 1);
+});
+test('inherited Bash startup cannot replace the command mocks', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'lint-startup-'));
+  try {
+    const startup = join(scratch, 'startup');
+    writeFileSync(startup, 'exit 99\n');
+    const result = runStep('Run Nix Git Hooks', {EVENT_NAME: 'push', BASH_ENV: startup, ENV: startup});
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.args.at(-1), '--all-files');
+  } finally {
+    rmSync(scratch, {recursive: true, force: true});
+  }
 });
