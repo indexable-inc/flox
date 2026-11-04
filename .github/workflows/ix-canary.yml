@@ -4,19 +4,13 @@
 name: "CI canary (ix)"
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch:
-  # Refresh the marker when the default branch changes, before the next schedule.
-  push:
-    branches: ["ix", "main"]
 
 permissions: {}
 
 jobs:
   canary:
     name: "Promotion and warmth"
-    if: ${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository }}
     # The ix-canary label gives this canary an independent seed lineage.
     runs-on: ["ix", "arm64", "ix-flox", "ix-canary"]
     timeout-minutes: 15
@@ -64,69 +58,35 @@ jobs:
       - name: "Enforce the warmth contract"
         shell: "bash"
         env:
-          EVENT_NAME: "${{ github.event_name }}"
           WARM: "${{ steps.warmth.outputs.warm }}"
           MARKER_SHA: "${{ steps.warmth.outputs.marker_sha }}"
           MARKER_EPOCH: "${{ steps.warmth.outputs.marker_epoch }}"
-          HEAD_SHA: "${{ github.sha }}"
-          # Match ix's trusted_run_provenance and default-branch gate. Schedule
-          # and dispatch payloads identify their source repository in repository.
-          CAN_PROMOTE: "${{ github.ref_name == github.event.repository.default_branch && (github.event_name == 'push' || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event.repository.full_name == github.repository)) }}"
+          # Manual runs can promote only from this repository's default branch.
+          CAN_PROMOTE: "${{ github.ref_name == github.event.repository.default_branch && github.event.repository.full_name == github.repository }}"
         run: |
           set -euo pipefail
 
           if [[ "$WARM" != "true" ]]; then
             if [[ "$CAN_PROMOTE" == "true" ]]; then
-              echo "::notice title=Cold ix canary bootstrap::This default-branch $EVENT_NAME run can promote; a green finish seeds the lineage."
+              echo "::notice title=Cold ix canary bootstrap::This default-branch manual run can promote; a green finish seeds the lineage."
               exit 0
             fi
-            echo "::error title=Cold ix canary cannot promote::No promoted seed exists for the ix-canary lineage, and a $EVENT_NAME run cannot create one."
+            echo "::error title=Cold ix canary cannot promote::No promoted seed exists for the ix-canary lineage, and this manual run cannot create one."
             printf '%s\n' \
-              "Run this canary on the default branch with a push, schedule, or" \
-              "workflow_dispatch event from this repository to seed the lineage." \
+              "Run this canary manually on this repository's default branch" \
+              "to seed the lineage." \
               "If promotion is genuinely broken, escalate to the ix platform." \
               "Do not add a workflow workaround."
             exit 1
           fi
 
-          # A warm marker missing sha or epoch is malformed (there is no
-          # legacy format to tolerate: markers and this check ship together).
-          # Keep marker repair limited to default-branch pushes. Scheduled and
-          # dispatched probes must still report malformed state.
           if [[ -z "$MARKER_SHA" || -z "$MARKER_EPOCH" ]]; then
-            if [[ "$CAN_PROMOTE" == "true" && "$EVENT_NAME" == "push" ]]; then
-              echo "::warning title=Malformed warmth marker::Marker lacks sha or epoch; this run's green finish rewrites it."
-              exit 0
-            fi
-            echo "::error title=Malformed warmth marker::Marker lacks sha or epoch; freshness cannot be enforced and will not be skipped."
+            echo "::error title=Malformed warmth marker::Marker lacks sha or epoch; the seed cannot be verified."
             printf '%s\n' \
-              "Push a commit to the default branch. Its green run rewrites" \
-              "the marker and promotes. If this recurs, the writer and this" \
-              "reader have diverged; fix the workflow, not the marker."
+              "Inspect the marker in this run's summary and the latest successful" \
+              "default-branch canary. Fix the marker writer or seed promotion" \
+              "before retrying."
             exit 1
-          fi
-
-          # Warm scheduled runs also prove promotion is CURRENT, not merely
-          # that it worked once: schedule runs execute at the default-branch
-          # head, so a marker recording an older sha means the newer push
-          # either went red or its green run was not promoted. The age grace
-          # covers the race with a push-triggered canary still in flight.
-          if [[ "$EVENT_NAME" == "schedule" && "$MARKER_SHA" != "$HEAD_SHA" ]]; then
-            now_epoch="$(date -u +%s)"
-            age=$(( now_epoch - MARKER_EPOCH ))
-            if (( age > 7200 )); then
-              echo "::error title=Promoted seed is behind the default branch::Marker sha $MARKER_SHA, head $HEAD_SHA, marker age ${age}s."
-              printf '%s\n' \
-                "The default branch moved but the seed still carries an older" \
-                "green marker: the newer push run went red, or its green run" \
-                "was not promoted. Check the latest push-triggered canary run;" \
-                "if it was green and this still fires, promotion is broken:" \
-                "escalate to the ix platform. Do not add a workflow workaround." \
-                "(A marker younger than 2h passes: the push run may still be" \
-                "in flight; the next scheduled run re-checks.)"
-              exit 1
-            fi
-            echo "::notice title=Promotion grace::Marker is behind head but only ${age}s old; allowing one promotion cycle."
           fi
 
       # A warm disk alone is insufficient; exercise the Nix client and evaluator
