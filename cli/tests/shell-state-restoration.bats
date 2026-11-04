@@ -28,6 +28,8 @@
 #     aliases, options, non-exported vars) — the surface `env` cannot see
 #     — for the in-place invocation mode only.
 # Neither subsumes the other; keep both.
+# Locale cases also compare values because CLI bootstrap must preserve the
+# difference between an absent caller value, an empty value and a custom path.
 #
 # ---------------------------------------------------------------------------- #
 
@@ -270,6 +272,40 @@ _assert_state_restored() {
   fi
 }
 
+# Exercise absence even on NixOS, where the login shell exports a locale.
+# Empty and user-provided values must survive the same round trip unchanged.
+_assert_locale_round_trips() {
+  local shell="$1" pre_base="$2" post_base="$3" locale_var locale_state pre post
+  case "$OSTYPE" in
+    darwin*) locale_var=PATH_LOCALE ;;
+    *) locale_var=LOCALE_ARCHIVE ;;
+  esac
+  local -a locale_args
+  for locale_state in unset empty custom; do
+    pre="$pre_base.$locale_state"
+    post="$post_base.$locale_state"
+    locale_args=(-u LOCALE_ARCHIVE -u PATH_LOCALE)
+    case "$locale_state" in
+      empty) locale_args+=("$locale_var=") ;;
+      custom) locale_args+=("$locale_var=/caller/locale-archive") ;;
+    esac
+    # A reused compinit dump changes which zsh variables exist before activation.
+    rm -f "$BATS_TEST_TMPDIR/.zcompdump"
+    run env "${locale_args[@]}" "$shell" "$TESTS_DIR/shell-state-restoration/dump.$shell" "$pre" "$post"
+    assert_success
+    if [ "$locale_state" = unset ]; then
+      run grep -E "^$locale_var=/" "$pre.active-locale"
+      assert_success
+    else
+      run diff "$pre.locale" "$pre.active-locale"
+      assert_success
+    fi
+    _assert_state_restored "$shell" "$pre" "$post"
+    run diff "$pre.locale" "$post.locale"
+    assert_success
+  done
+}
+
 # bats test_tags=deactivate,shell-state-restoration:bash
 @test "bash: deactivate restores pre-activation shell state" {
   project_setup
@@ -283,10 +319,7 @@ _assert_state_restored() {
   #                             → function names (sorted) and bodies
   #   - `compgen -v`            → variable names, including non-exported
   # The actual filter/dump lives in dump.bash; see comments there.
-  run bash "$TESTS_DIR/shell-state-restoration/dump.bash" "$pre" "$post"
-  assert_success
-
-  _assert_state_restored bash "$pre" "$post"
+  _assert_locale_round_trips bash "$pre" "$post"
 }
 
 # ---------------------------------------------------------------------------- #
@@ -306,10 +339,7 @@ _assert_state_restored() {
   #                              → variable names (sorted), including
   #                                non-exported locals.
   # The actual filter/dump lives in dump.zsh; see comments there.
-  run zsh "$TESTS_DIR/shell-state-restoration/dump.zsh" "$pre" "$post"
-  assert_success
-
-  _assert_state_restored zsh "$pre" "$post"
+  _assert_locale_round_trips zsh "$pre" "$post"
 }
 
 # ---------------------------------------------------------------------------- #
@@ -327,10 +357,7 @@ _assert_state_restored() {
   #   - `functions NAME`        → function body
   #   - `set --names`           → variable names across all scopes
   # fish has no shopt/setopt equivalent. See dump.fish for details.
-  run fish "$TESTS_DIR/shell-state-restoration/dump.fish" "$pre" "$post"
-  assert_success
-
-  _assert_state_restored fish "$pre" "$post"
+  _assert_locale_round_trips fish "$pre" "$post"
 }
 
 # ---------------------------------------------------------------------------- #
@@ -349,8 +376,5 @@ _assert_state_restored() {
   #                               the first whitespace field)
   #   - `setenv`                → env-variable names (awk splits on `=`)
   # See dump.tcsh for details.
-  run tcsh "$TESTS_DIR/shell-state-restoration/dump.tcsh" "$pre" "$post"
-  assert_success
-
-  _assert_state_restored tcsh "$pre" "$post"
+  _assert_locale_round_trips tcsh "$pre" "$post"
 }

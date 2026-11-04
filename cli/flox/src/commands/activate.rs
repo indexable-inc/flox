@@ -21,6 +21,7 @@ use flox_core::data::System;
 use flox_core::data::environment_ref::DEFAULT_NAME;
 use flox_core::hook_actions::{PROMPT_HOOK_VERSION_ENV, prompt_hook_version_mismatched};
 use flox_core::traceable_path;
+use flox_core::util::restore_startup_activation_env;
 use flox_events::{CliEnvironmentActivatePayload, EventKind, EventsHub};
 use flox_manifest::interfaces::{AsLatestSchema, AsWritableManifest, WriteManifest};
 use flox_manifest::lockfile::Lockfile;
@@ -764,10 +765,9 @@ impl ActivateOptions {
         // more sense for 0 to be the default rather than 1.
         let verbosity_num = flox.verbosity.max(0) as u32;
         let mut command = std::process::Command::new(&*FLOX_ACTIVATIONS_BIN);
-        // The activation, and the shell it starts, must not inherit the
-        // certificate paths the TLS library may have written into this
-        // process since startup.
-        flox_core::util::restore_startup_tls_env(&mut command);
+        // The restore diff must start with the caller's values, before
+        // this CLI applied Nix defaults or the TLS library probed paths.
+        restore_startup_activation_env(&mut command);
         command
             .env(FLOX_ACTIVATIONS_VERBOSITY_VAR, format!("{verbosity_num}"))
             .arg("activate")
