@@ -23,7 +23,8 @@
   lib,
   pkgs,
   ...
-}: {
+}:
+{
   # THE load-bearing line of this file.
   #
   # flox's root flake declares `nixConfig.extra-substituters =
@@ -38,7 +39,7 @@
   # Substituters are additive across modules, so platform.nix's two entries
   # stay; this appends the third.
   nix.settings = {
-    substituters = ["https://cache.flox.dev"];
+    substituters = [ "https://cache.flox.dev" ];
     trusted-public-keys = [
       "flox-cache-public-1:7F4OyH7ZCnFhcze3fJdfyXYLQw/aV7GEed86nQ7IsOs="
     ];

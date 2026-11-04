@@ -63,6 +63,9 @@ pub struct EventsClient {
     /// Snapshot from the last append, so checking expiry at command exit
     /// does not need to read the buffer again. Flushers still check on disk.
     oldest_buffered_timestamp: Option<OffsetDateTime>,
+    /// One time source for event timestamps and both expiry paths. Tests can
+    /// hold time fixed while the real buffer performs filesystem operations.
+    now: fn() -> OffsetDateTime,
 }
 
 impl EventsClient {
@@ -111,7 +114,14 @@ impl EventsClient {
             connection: connection.boxed(),
             shared_metadata,
             oldest_buffered_timestamp: None,
+            now: OffsetDateTime::now_utc,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_time_source(mut self, now: fn() -> OffsetDateTime) -> Self {
+        self.now = now;
+        self
     }
 
     /// Record a `cli.command_run` event for `subcommand` — the one event
@@ -147,7 +157,7 @@ impl EventsClient {
     ) -> Result<()> {
         let event = Event {
             event_id: Uuid::new_v4(),
-            event_timestamp: OffsetDateTime::now_utc(),
+            event_timestamp: (self.now)(),
             source: "cli",
             invocation_id: self.invocation_id,
             device_id: self.device_id,
@@ -190,16 +200,16 @@ impl EventsClient {
     /// this snapshot was taken.
     pub fn is_flush_due(&self) -> Result<bool> {
         if let Some(oldest) = self.oldest_buffered_timestamp {
-            return Ok(OffsetDateTime::now_utc() - oldest > self.expiry());
+            return Ok((self.now)() - oldest > self.expiry());
         }
         Ok(EventsBuffer::try_read(&self.data_dir)?
-            .is_some_and(|events| events.is_expired(self.expiry())))
+            .is_some_and(|events| events.is_expired(self.expiry(), (self.now)())))
     }
 
     pub fn flush(&mut self, force: bool) -> Result<()> {
         self.oldest_buffered_timestamp = None;
         let mut events = EventsBuffer::read(&self.data_dir)?;
-        if !events.is_expired(self.expiry()) && !force {
+        if !events.is_expired(self.expiry(), (self.now)()) && !force {
             return Ok(());
         }
 
@@ -241,7 +251,7 @@ impl EventsClient {
                 debug!("v2 events buffer lock held by another process; skipping flush");
                 return Ok(false);
             };
-            if !events.is_expired(self.expiry()) && !force {
+            if !events.is_expired(self.expiry(), (self.now)()) && !force {
                 return Ok(true);
             }
             // Snapshot all sendable entries and remove them from the file while
