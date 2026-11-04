@@ -356,15 +356,10 @@ jobs:
         run: nix develop -L --no-update-lock-file --command just build-cli
 
       - name: "CLI Unit Tests"
-        # Only run unit tests if when not running specialized integration tests
-        # Also skip on a default-branch push; already run in the merge queue. The
-        # "Build" step above still runs unconditionally (subject only to
-        # `scope`) so the Cargo cache above stays warm for new branches to
-        # restore from — caches are only ever written by the job that ran
-        # them, so without a job running here on the default branch, `restore-keys` would
-        # never have anything fresh to fall back to.
+        # Upstream validates pushes in its merge queue. The IX fork runs the
+        # tests on default-branch pushes too, so its seed includes test builds.
         id: unit-tests
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         env:
           RUST_BACKTRACE: 1
           IMPURE_TESTS_EXTRA_ARGS: "--no-fail-fast"
@@ -373,8 +368,8 @@ jobs:
           nix develop -L --no-update-lock-file --command just impure-tests
 
       - name: "Check schemas are up to date"
-        # Skip on a default-branch push; already run in the merge queue.
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+        # Keep the fork's seed-building push equivalent to its measured repeat.
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         run: |
           nix develop -L --no-update-lock-file --command just gen-schemas
           if ! git diff --quiet cli/schemas; then
@@ -489,7 +484,7 @@ jobs:
           NIX_SUBSTITUTER: "${{ vars.MANAGED_CACHE_PUBLIC_S3_BUCKET }}"
           NIX_SUBSTITUTER_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_SECRET_KEY }}"
         run: |
-          for package in 'packages.${{ matrix.system }}.flox-nix-plugins' 'packages.${{ matrix.system }}.flox-cli' 'packages.${{ matrix.system }}.flox' 'packages.${{ matrix.system }}.flox-cli-tests'; do
+          for package in 'checks.${{ matrix.system }}.dev-tool-cache' 'packages.${{ matrix.system }}.flox-nix-plugins' 'packages.${{ matrix.system }}.flox-cli' 'packages.${{ matrix.system }}.flox' 'packages.${{ matrix.system }}.flox-cli-tests'; do
             echo "::group::Building $package"
             ./.github/scripts/ix-local-nix-build.sh "$package" "$NIX_SUBSTITUTER"
             echo "::endgroup::"
@@ -602,7 +597,7 @@ jobs:
 
   trigger-flox-installers-workflow:
     name: "Build installers"
-    if: ${{ github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
+    if: ${{ github.repository == 'flox/flox' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
     runs-on: "ubuntu-latest"
     timeout-minutes: 120
 
@@ -638,7 +633,7 @@ jobs:
     runs-on: "ubuntu-latest"
     timeout-minutes: 30
 
-    if: ${{ failure() && github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
+    if: ${{ failure() && github.repository == 'flox/flox' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
 
     # All ix lanes now run on the default-branch push so their seeds can
     # refresh. Keep the notification dependencies narrow to the jobs that
@@ -669,8 +664,8 @@ jobs:
           SLACK_LINK_NAMES: true
 
   nix-build-bats-tests:
-    name: "remote"
-    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-bats"]')) || 'ubuntu-latest' }}
+    name: "remote (${{ matrix.system }}, ${{ matrix.test-tags }})"
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.ix-runner) || 'ubuntu-latest' }}
     # This lane also participates in the first seed promotion. Give a cold
     # ARM64 build the same ceiling as the other ix lanes.
     timeout-minutes: 180
@@ -680,11 +675,11 @@ jobs:
       id-token: write # Needed for CodeCov
 
     env:
-      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize') }}"
-      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '32') || '0' }}"
+      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux') }}"
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '32') || '0' }}"
 
-      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '1') || '' }}"
-      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '1') || '' }}"
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
 
     needs:
       - "scope"
@@ -701,11 +696,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        system:
-          - "aarch64-linux"
-        test-tags:
-          - "containerize"
-          - "!containerize"
+        include:
+          - system: "aarch64-linux"
+            test-tags: "containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats-containerize"]
+          - system: "aarch64-linux"
+            test-tags: "!containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats"]
 
     steps:
       - name: "Checkout"
@@ -745,6 +742,16 @@ jobs:
           MATRIX_SYSTEM: ${{ matrix.system }}
           MATRIX_TEST_TAGS: ${{ matrix.test-tags }}
         run: ./.github/scripts/remote-execute-integration-tests.sh
+
+      - name: "Prepare rootless containers (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' && matrix.test-tags == 'containerize' }}
+        run: |
+          set -euo pipefail
+          # OCI guests have no udev rule to grant access to the devtmpfs TUN
+          # node. Podman's rootless network helper needs to open this device.
+          test -c /dev/net/tun
+          sudo -n chmod 0666 /dev/net/tun
+          test -r /dev/net/tun && test -w /dev/net/tun
 
       - name: "Run Bats Tests (ix, local)"
         timeout-minutes: 45
