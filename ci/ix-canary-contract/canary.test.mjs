@@ -87,3 +87,20 @@ test('each embedded shell script parses', () => {
     assert.equal(result.status, 0, `${step.name}: ${result.stderr}`);
   }
 });
+
+const ci = YAML.parse(readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+const failure = {name: 'failure', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(true)};
+for (const job of ['trigger-flox-installers-workflow', 'report-failure']) {
+  const condition = new Parser(new Lexer(ci.jobs[job].if.slice(3, -2).trim()).lex().tokens, ['github'], [failure]).parse();
+  for (const [repository, branch, event, expected] of [
+    ['indexable-inc/flox', 'ix', 'push', 'false'],
+    ['flox/flox', 'main', 'push', 'true'],
+    ['flox/flox', 'main', 'workflow_dispatch', 'false'],
+    ['flox/flox', 'feature', 'push', 'false'],
+  ]) {
+    test(`${job} owns ${repository} ${branch} ${event}: ${expected}`, () => {
+      const github = {repository, ref_name: branch, event_name: event, event: {repository: {default_branch: repository === 'flox/flox' ? 'main' : 'ix'}}};
+      assert.equal(new Evaluator(condition, expressionData({github}), new Map([['failure', failure]])).evaluate().coerceString(), expected);
+    });
+  }
+}

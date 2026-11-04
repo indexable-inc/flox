@@ -6,7 +6,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test canary.test.mjs"
+    "test": "node --test *.test.mjs"
   },
   "devDependencies": {
     "@actions/expressions": "0.3.61",
