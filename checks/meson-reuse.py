@@ -19,12 +19,15 @@ class MesonReuse(unittest.TestCase):
             source = root / "source"
             build = root / "build"
             source.mkdir()
+            prefix = source / "install"
             dependency = root / "dependency"
             dependency.mkdir()
             source.joinpath("meson.build").write_text(
                 "project('reuse', 'cpp')\n"
-                "executable('probe', 'probe.cc', dependencies: dependency('probe-dep'))\n"
+                "executable('probe', 'probe.cc', dependencies: dependency('probe-dep'), install: true)\n"
+                "shared_library('probe-lib', 'library.cc', install: true)\n"
             )
+            source.joinpath("library.cc").write_text("int library_value() { return 1; }\n")
             code = "#include <cstdio>\nint main() { std::printf(\"%d\\n\", DEP_VALUE + 1); }\n"
             source.joinpath("probe.cc").write_text(code)
             pc = dependency / "probe-dep.pc"
@@ -43,7 +46,7 @@ class MesonReuse(unittest.TestCase):
                 return result.stdout
 
             def configure():
-                run("bash", str(SETUP), COMPILER_PACKAGE, str(source), str(build), str(root / "install"))
+                run("bash", str(SETUP), COMPILER_PACKAGE, str(source), str(build), str(prefix))
 
             def compile_and_output():
                 run("meson", "compile", "-C", str(build))
@@ -53,7 +56,7 @@ class MesonReuse(unittest.TestCase):
             configure()
             self.assertEqual(compile_and_output(), "11")
             objects = list(build.rglob("*.o"))
-            self.assertEqual(len(objects), 1)
+            self.assertEqual(len(objects), 2)
             unchanged = [(obj.stat().st_ino, obj.stat().st_mtime_ns) for obj in objects]
             configure()
             self.assertEqual(compile_and_output(), "11")
@@ -61,6 +64,27 @@ class MesonReuse(unittest.TestCase):
                 [(obj.stat().st_ino, obj.stat().st_mtime_ns) for obj in objects], unchanged,
                 "entering the same shell must preserve compiled objects",
             )
+
+            # Checkout's clean must remove stale workspace files while the
+            # external build tree survives and restores installed libraries.
+            run("git", "-C", str(source), "init", "-q")
+            run("git", "-C", str(source), "add", "meson.build", "probe.cc", "library.cc")
+            run("meson", "install", "-C", str(build))
+            installed = [path.relative_to(prefix) for path in prefix.rglob("*") if path.is_file()]
+            self.assertGreaterEqual(len(installed), 2)
+            stale = source / "stale.cc"
+            stale.write_text("stale source must not survive checkout\n")
+            run("git", "-C", str(source), "clean", "-ffdx")
+            self.assertFalse(stale.exists())
+            self.assertFalse(prefix.exists())
+            configure()
+            self.assertEqual(compile_and_output(), "11")
+            self.assertEqual(
+                [(obj.stat().st_ino, obj.stat().st_mtime_ns) for obj in objects], unchanged,
+                "checkout cleaning must preserve external compiled objects",
+            )
+            run("meson", "install", "-C", str(build))
+            self.assertTrue(all((prefix / path).is_file() for path in installed))
 
             source.joinpath("probe.cc").write_text(code.replace("+ 1", "+ 2"))
             configure()
@@ -82,6 +106,13 @@ class MesonReuse(unittest.TestCase):
             env["CXX"] = str(wrapper)
             configure()
             self.assertEqual(compile_and_output(), "120", "compiler changes must take effect")
+
+            relocated = root / "other-source"
+            shutil.copytree(source, relocated)
+            source = relocated
+            prefix = source / "install"
+            configure()
+            self.assertEqual(compile_and_output(), "120", "a moved checkout must rebind the build tree")
 
 
 unittest.main()

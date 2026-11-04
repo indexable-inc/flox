@@ -150,6 +150,7 @@ mkShell (
       # make built binaries
       define_dev_env_var BUILDENV_BIN "''${REPO_ROOT}/build/flox-buildenv/bin/buildenv";
       define_dev_env_var NIX_PLUGINS "''${REPO_ROOT}/build/nix-plugins/lib/nix-plugins";
+      define_dev_env_var FLOX_NIX_PLUGINS_BUILD_DIR "''${FLOX_NIX_PLUGINS_BUILD_DIR-''${REPO_ROOT}/nix-plugins/builddir}";
 
       # static nix files
       define_dev_env_var FLOX_MK_CONTAINER_NIX "''${REPO_ROOT}/mkContainer/mkContainer.nix";
@@ -180,7 +181,7 @@ mkShell (
       export MANPATH="''${FLOX_MANPAGES}/share/man:$MANPATH"
 
       bash ${../configure-nix-plugins.sh} ${stdenv.cc} \
-        "''${REPO_ROOT}/nix-plugins" "''${REPO_ROOT}/nix-plugins/builddir" \
+        "''${REPO_ROOT}/nix-plugins" "$FLOX_NIX_PLUGINS_BUILD_DIR" \
         "''${REPO_ROOT}/build/nix-plugins";
 
       echo;
