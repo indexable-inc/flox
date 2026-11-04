@@ -104,3 +104,21 @@ for (const job of ['trigger-flox-installers-workflow', 'report-failure']) {
     });
   }
 }
+
+for (const name of ['CLI Unit Tests', 'Check schemas are up to date']) {
+  const step = ci.jobs['cli-unit'].steps.find(step => step.name === name);
+  const condition = new Parser(new Lexer(step.if.slice(3, -2).trim()).lex().tokens, ['github', 'needs'], []).parse();
+  for (const [repository, branch, event, heavy, expected] of [
+    ['indexable-inc/flox', 'ix', 'push', 'true', 'true'],
+    ['indexable-inc/flox', 'ix', 'workflow_dispatch', 'true', 'true'],
+    ['flox/flox', 'main', 'push', 'true', 'false'],
+    ['flox/flox', 'main', 'pull_request', 'true', 'true'],
+    ['indexable-inc/flox', 'feature', 'pull_request', 'false', 'false'],
+  ]) {
+    test(`${name} executes ${repository} ${branch} ${event} heavy=${heavy}: ${expected}`, () => {
+      const github = {repository, ref_name: branch, event_name: event, event: {repository: {default_branch: repository === 'flox/flox' ? 'main' : 'ix'}}};
+      const needs = {scope: {outputs: {heavy}}};
+      assert.equal(new Evaluator(condition, expressionData({github, needs})).evaluate().coerceString(), expected);
+    });
+  }
+}

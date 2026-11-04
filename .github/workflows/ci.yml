@@ -356,15 +356,10 @@ jobs:
         run: nix develop -L --no-update-lock-file --command just build-cli
 
       - name: "CLI Unit Tests"
-        # Only run unit tests if when not running specialized integration tests
-        # Also skip on a default-branch push; already run in the merge queue. The
-        # "Build" step above still runs unconditionally (subject only to
-        # `scope`) so the Cargo cache above stays warm for new branches to
-        # restore from — caches are only ever written by the job that ran
-        # them, so without a job running here on the default branch, `restore-keys` would
-        # never have anything fresh to fall back to.
+        # Upstream validates pushes in its merge queue. The IX fork runs the
+        # tests on default-branch pushes too, so its seed includes test builds.
         id: unit-tests
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         env:
           RUST_BACKTRACE: 1
           IMPURE_TESTS_EXTRA_ARGS: "--no-fail-fast"
@@ -373,8 +368,8 @@ jobs:
           nix develop -L --no-update-lock-file --command just impure-tests
 
       - name: "Check schemas are up to date"
-        # Skip on a default-branch push; already run in the merge queue.
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+        # Keep the fork's seed-building push equivalent to its measured repeat.
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         run: |
           nix develop -L --no-update-lock-file --command just gen-schemas
           if ! git diff --quiet cli/schemas; then
