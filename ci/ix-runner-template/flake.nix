@@ -48,35 +48,34 @@
     };
   };
 
-  outputs = {
-    nixpkgs,
-    ix-runner-template,
-    ...
-  }: let
-    platform = "${ix-runner-template}/ci/runner-template";
-    floxRunner = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        "${platform}/module.nix" # the mechanism, ix-owned
-        "${platform}/platform.nix" # ix substrate policy
-        ./flox.nix # this repository's family delta
-        {services.ix-runner.enable = true;}
-      ];
-    };
-  in {
-    nixosConfigurations.flox = floxRunner;
+  outputs =
+    {
+      nixpkgs,
+      ix-runner-template,
+      ...
+    }:
+    let
+      platform = "${ix-runner-template}/ci/runner-template";
+      floxRunner = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          "${platform}/module.nix" # the mechanism, ix-owned
+          "${platform}/platform.nix" # ix substrate policy
+          ./flox.nix # this repository's family delta
+          { services.ix-runner.enable = true; }
+        ];
+      };
+    in
+    {
+      nixosConfigurations.flox = floxRunner;
 
-    # A plain ix template leaves root-device and bootloader facts to the
-    # platform's injected machine profile, so the configuration cannot be
-    # realized standalone; extend it as a container for the check only, the
-    # way the platform template's own flake does.
-    checks.x86_64-linux.flox-runner-template =
-      (floxRunner.extendModules {
-        modules = [{boot.isContainer = true;}];
-      })
-      .config
-      .system
-      .build
-      .toplevel;
-  };
+      # A plain ix template leaves root-device and bootloader facts to the
+      # platform's injected machine profile, so the configuration cannot be
+      # realized standalone; extend it as a container for the check only, the
+      # way the platform template's own flake does.
+      checks.x86_64-linux.flox-runner-template =
+        (floxRunner.extendModules {
+          modules = [ { boot.isContainer = true; } ];
+        }).config.system.build.toplevel;
+    };
 }
