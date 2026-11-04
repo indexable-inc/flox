@@ -84,6 +84,11 @@ runs:
           "cores = 32" \
           > "$HOME/.config/nix/nix.conf"
 
+        # Integration tests isolate HOME. Keep their Nix clients on this job's
+        # cache configuration instead of reverting to the image's mirror.
+        export NIX_USER_CONF_FILES="$HOME/.config/nix/nix.conf"
+        printf 'NIX_USER_CONF_FILES=%s\n' "$NIX_USER_CONF_FILES" >> "$GITHUB_ENV"
+
         if ! nix config show 2>/dev/null | grep -q 'cache\.flox\.dev'; then
           echo "::error title=Flox cache is unavailable::The ix runner did not accept cache.flox.dev in its client configuration; refusing a source build." >&2
           exit 1
