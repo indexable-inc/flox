@@ -38,22 +38,19 @@ runs:
         extra_keys="$(jq -er '."extra-trusted-public-keys" | select(type == "array" and length > 0) | join(" ")' <<< "$cache_config")"
         # Rewritten, not appended: the seed disk carries $HOME across jobs, so
         # appending would accumulate one dead token per job of the lineage.
-        # The pool template normally supplies these caches system-wide. Keep
-        # them in the client config too so a seed made from the platform
-        # template still uses the Flox closure instead of rebuilding it.
-        # The platform template currently points at an internal mirror that
-        # is unreachable from these runners. Keep this job config explicit so
-        # Nix does not spend 15 seconds x 5 attempts on every cache probe and
-        # then compile the whole toolchain from source.
+        # Use the flake's public caches even when the image has other defaults.
+        # Nix and the runner image own connection timeouts and retry budgets.
         # Keep the daemon's fan-out bounded while giving each derivation the
         # 32-core build budget available on the Graviton guest. Two concurrent
         # derivations leave memory headroom for the runner and test processes.
+        # Run 41832230118 hit HTTP/2 stream errors with Nix's libcurl 8.21.0,
+        # then resumed a complete-length NAR at EOF and received HTTP 416.
+        # Use HTTP/1.1 until the Nix transport is verified with those transfers.
         printf '%s\n' \
           "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
           "substituters = https://cache.nixos.org $extra_caches" \
           "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= $extra_keys" \
-          "connect-timeout = 5" \
-          "download-attempts = 2" \
+          "http2 = false" \
           "max-jobs = 2" \
           "cores = 32" \
           > "$HOME/.config/nix/nix.conf"
@@ -62,6 +59,11 @@ runs:
         # cache configuration instead of reverting to the image's mirror.
         export NIX_USER_CONF_FILES="$HOME/.config/nix/nix.conf"
         printf 'NIX_USER_CONF_FILES=%s\n' "$NIX_USER_CONF_FILES" >> "$GITHUB_ENV"
+
+        if [[ "$(nix config show http2)" != false ]]; then
+          echo "::error::Nix did not apply the HTTP/1.1 cache-transfer setting" >&2
+          exit 1
+        fi
 
         if ! nix config show 2>/dev/null | grep -q 'cache\.flox\.dev'; then
           echo "::error title=Flox cache is unavailable::The ix runner did not accept cache.flox.dev in its client configuration; refusing a source build." >&2
@@ -72,6 +74,14 @@ runs:
           echo "::error title=ix Nix parallelism is not pinned::The runner ignored the two-job, 32-core daemon settings; refusing an under-sized build." >&2
           exit 1
         }
+
+    - name: "Preserve plugin build artifacts"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+        # Checkout removes ignored workspace files. Keep only Meson's build
+        # directory outside it; each job reinstalls libraries into its checkout.
+        printf 'FLOX_NIX_PLUGINS_BUILD_DIR=%s/.cache/ix-ci/flox/nix-plugins\n' "$HOME" >> "$GITHUB_ENV"
 
     - name: "Backfill hosted-image PATH parity"
       shell: "bash"

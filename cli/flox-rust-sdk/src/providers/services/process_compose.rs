@@ -1633,11 +1633,16 @@ mod tests {
 
     /// Test that [ProcessStates] reads and parses.
     #[test]
-    fn test_process_states_read() {
+    fn process_states_read() {
         let instance = TestProcessComposeInstance::start(&ProcessComposeConfig {
             processes: [
                 ("foo".to_string(), ProcessConfig {
-                    command: String::from("sleep 1"),
+                    // The test instance stops this process on drop. A finite
+                    // sleep can finish before a loaded runner reads its state.
+                    command: format!(
+                        "exec {} infinity",
+                        shell_escape::escape((&*SLEEP_BIN).into())
+                    ),
                     vars: None,
                     is_daemon: None,
                     shutdown: None,
@@ -1662,26 +1667,27 @@ mod tests {
             ..Default::default()
         });
 
-        let mut states = None;
+        let mut last_read = None;
+        let mut completed = None;
         for _ in 0..10 {
             std::thread::sleep(Duration::from_millis(10));
-            states = ProcessStates::read(instance.socket())
-                .inspect_err(|err| {
-                    println!("error reading states: {:?}", err);
-                })
-                .ok();
-
-            if let Some(ref states) = states {
-                // Even if `process-compose list` succeeded, the processes might
-                // be "Running"
-                if states.process("bar").unwrap().status == "Completed"
-                    && states.process("baz").unwrap().status == "Completed"
+            match ProcessStates::read(instance.socket()) {
+                Ok(states)
+                    if ["bar", "baz"].iter().all(|name| {
+                        states
+                            .process(name)
+                            .is_some_and(|process| process.status == "Completed")
+                    }) =>
                 {
+                    completed = Some(states);
                     break;
-                }
+                },
+                read => last_read = Some(read),
             }
         }
-        let states = states.expect("failed to read process states");
+        let states = completed.unwrap_or_else(|| {
+            panic!("bar and baz did not complete after 10 state reads: {last_read:?}")
+        });
 
         let foo = states.process("foo").expect("foo not found");
         assert_eq!(foo.name, "foo");
@@ -1699,5 +1705,20 @@ mod tests {
         assert_eq!(baz.status, "Completed");
         assert!(!baz.is_running);
         assert_eq!(baz.exit_code, 1);
+
+        let foo_pid = nix::unistd::Pid::from_raw(foo.pid.try_into().expect("foo PID fits in i32"));
+        drop(instance);
+        let shutdown_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match nix::sys::signal::kill(foo_pid, None) {
+                Err(nix::errno::Errno::ESRCH) => break,
+                Ok(()) if std::time::Instant::now() < shutdown_deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                result => {
+                    panic!("foo PID {foo_pid} survived dropping its test manager: {result:?}")
+                },
+            }
+        }
     }
 }
