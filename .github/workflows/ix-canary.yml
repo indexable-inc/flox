@@ -7,8 +7,7 @@ on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
-  # Load-bearing: ix promotes a lineage's seed only from a green default-branch
-  # push run. Without this trigger, scheduled canaries cold-boot forever.
+  # Refresh the marker when the default branch changes, before the next schedule.
   push:
     branches: ["ix", "main"]
 
@@ -18,7 +17,7 @@ jobs:
   canary:
     name: "Promotion and warmth"
     if: ${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository }}
-    # The second label gives this canary an independent seed lineage.
+    # The ix-canary label gives this canary an independent seed lineage.
     runs-on: ["ix", "arm64", "ix-flox", "ix-canary"]
     timeout-minutes: 15
 
@@ -70,23 +69,21 @@ jobs:
           MARKER_SHA: "${{ steps.warmth.outputs.marker_sha }}"
           MARKER_EPOCH: "${{ steps.warmth.outputs.marker_epoch }}"
           HEAD_SHA: "${{ github.sha }}"
-          # Only a green default-branch push run gets promoted, so only that
-          # event is allowed to boot cold: a cold run anywhere else is a
-          # promotion failure, not a bootstrap.
-          CAN_PROMOTE: "${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}"
+          # Match ix's trusted_run_provenance and default-branch gate. Schedule
+          # and dispatch payloads identify their source repository in repository.
+          CAN_PROMOTE: "${{ github.ref_name == github.event.repository.default_branch && (github.event_name == 'push' || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.event.repository.full_name == github.repository)) }}"
         run: |
           set -euo pipefail
 
           if [[ "$WARM" != "true" ]]; then
             if [[ "$CAN_PROMOTE" == "true" ]]; then
-              echo "::notice title=Cold ix canary bootstrap::This default-branch push can promote; a green finish seeds the lineage."
+              echo "::notice title=Cold ix canary bootstrap::This default-branch $EVENT_NAME run can promote; a green finish seeds the lineage."
               exit 0
             fi
             echo "::error title=Cold ix canary cannot promote::No promoted seed exists for the ix-canary lineage, and a $EVENT_NAME run cannot create one."
             printf '%s\n' \
-              "Only a green default-branch push run is promoted to the seed." \
-              "Push any commit to the default branch and let it go green; then" \
-              "dispatch this canary again, which must come up WARM." \
+              "Run this canary on the default branch with a push, schedule, or" \
+              "workflow_dispatch event from this repository to seed the lineage." \
               "If promotion is genuinely broken, escalate to the ix platform." \
               "Do not add a workflow workaround."
             exit 1
@@ -94,18 +91,16 @@ jobs:
 
           # A warm marker missing sha or epoch is malformed (there is no
           # legacy format to tolerate: markers and this check ship together).
-          # A run that can promote proceeds, because its green finish rewrites
-          # the marker, which is the malformed state's only leaver; a run that
-          # cannot promote fails closed rather than skip enforcement or
-          # fabricate an age from epoch zero.
+          # Keep marker repair limited to default-branch pushes. Scheduled and
+          # dispatched probes must still report malformed state.
           if [[ -z "$MARKER_SHA" || -z "$MARKER_EPOCH" ]]; then
-            if [[ "$CAN_PROMOTE" == "true" ]]; then
+            if [[ "$CAN_PROMOTE" == "true" && "$EVENT_NAME" == "push" ]]; then
               echo "::warning title=Malformed warmth marker::Marker lacks sha or epoch; this run's green finish rewrites it."
               exit 0
             fi
             echo "::error title=Malformed warmth marker::Marker lacks sha or epoch; freshness cannot be enforced and will not be skipped."
             printf '%s\n' \
-              "Push any commit to the default branch: its green run rewrites" \
+              "Push a commit to the default branch. Its green run rewrites" \
               "the marker and promotes. If this recurs, the writer and this" \
               "reader have diverged; fix the workflow, not the marker."
             exit 1
