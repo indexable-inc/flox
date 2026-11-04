@@ -73,6 +73,14 @@ runs:
           exit 1
         }
 
+    - name: "Preserve plugin build artifacts"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+        # Checkout removes ignored workspace files. Keep only Meson's build
+        # directory outside it; each job reinstalls libraries into its checkout.
+        printf 'FLOX_NIX_PLUGINS_BUILD_DIR=%s/.cache/ix-ci/flox/nix-plugins\n' "$HOME" >> "$GITHUB_ENV"
+
     - name: "Backfill hosted-image PATH parity"
       shell: "bash"
       run: |

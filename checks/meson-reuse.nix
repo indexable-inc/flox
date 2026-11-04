@@ -5,6 +5,7 @@
   ninja,
   pkg-config,
   python3,
+  gitMinimal,
 }:
 runCommand "meson-reuse"
   {
@@ -14,6 +15,7 @@ runCommand "meson-reuse"
       ninja
       pkg-config
       python3
+      gitMinimal
     ];
   }
   ''

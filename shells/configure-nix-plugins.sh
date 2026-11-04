@@ -9,10 +9,11 @@ toolchain_file="$build_dir/.flox-toolchain"
 current_toolchain="$(mktemp)"
 trap 'rm -f "$current_toolchain"' EXIT
 
-# Meson clears dependencies with --clearcache, but retains its compiler and
-# initial environment flags. A changed toolchain needs a fresh configuration.
+# Meson clears dependencies with --clearcache, but retains its compiler,
+# initial flags and source directory. Changed inputs need a fresh configuration.
 printf '%s\n' \
   "compiler_package=$compiler_package" \
+  "source_dir=$source_dir" \
   "meson=$(meson --version)" \
   "CXX=${CXX:?CXX is required}" \
   "CXX_LD=${CXX_LD-}" \
