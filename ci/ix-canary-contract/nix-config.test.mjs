@@ -31,6 +31,11 @@ test('job cache configuration survives an isolated test HOME', {skip: !hasNix}, 
     });
     assert.equal(isolated.status, 0, isolated.stderr);
     assert.deepEqual(isolated.stdout.trim().split(/\s+/), ['https://cache.nixos.org', ...config['extra-substituters']]);
+    const protocol = spawnSync('nix', ['config', 'show', 'http2'], {
+      cwd: root, env: {...env, HOME: testHome, NIX_USER_CONF_FILES: exported[1]}, encoding: 'utf8',
+    });
+    assert.equal(protocol.status, 0, protocol.stderr);
+    assert.equal(protocol.stdout.trim(), 'false');
   } finally {
     rmSync(scratch, {recursive: true, force: true});
   }

@@ -48,10 +48,14 @@ runs:
         # Keep the daemon's fan-out bounded while giving each derivation the
         # 32-core build budget available on the Graviton guest. Two concurrent
         # derivations leave memory headroom for the runner and test processes.
+        # Run 41832230118 hit HTTP/2 stream errors with Nix's libcurl 8.21.0,
+        # then resumed a complete-length NAR at EOF and received HTTP 416.
+        # Use HTTP/1.1 until the Nix transport is verified with those transfers.
         printf '%s\n' \
           "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
           "substituters = https://cache.nixos.org $extra_caches" \
           "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= $extra_keys" \
+          "http2 = false" \
           "connect-timeout = 5" \
           "download-attempts = 2" \
           "max-jobs = 2" \
@@ -62,6 +66,11 @@ runs:
         # cache configuration instead of reverting to the image's mirror.
         export NIX_USER_CONF_FILES="$HOME/.config/nix/nix.conf"
         printf 'NIX_USER_CONF_FILES=%s\n' "$NIX_USER_CONF_FILES" >> "$GITHUB_ENV"
+
+        if [[ "$(nix config show http2)" != false ]]; then
+          echo "::error::Nix did not apply the HTTP/1.1 cache-transfer setting" >&2
+          exit 1
+        fi
 
         if ! nix config show 2>/dev/null | grep -q 'cache\.flox\.dev'; then
           echo "::error title=Flox cache is unavailable::The ix runner did not accept cache.flox.dev in its client configuration; refusing a source build." >&2
