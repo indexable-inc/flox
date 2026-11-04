@@ -669,8 +669,8 @@ jobs:
           SLACK_LINK_NAMES: true
 
   nix-build-bats-tests:
-    name: "remote"
-    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-bats"]')) || 'ubuntu-latest' }}
+    name: "remote (${{ matrix.system }}, ${{ matrix.test-tags }})"
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.ix-runner) || 'ubuntu-latest' }}
     # This lane also participates in the first seed promotion. Give a cold
     # ARM64 build the same ceiling as the other ix lanes.
     timeout-minutes: 180
@@ -680,11 +680,11 @@ jobs:
       id-token: write # Needed for CodeCov
 
     env:
-      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize') }}"
-      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '32') || '0' }}"
+      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux') }}"
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '32') || '0' }}"
 
-      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '1') || '' }}"
-      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.test-tags == '!containerize' && '1') || '' }}"
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
 
     needs:
       - "scope"
@@ -701,11 +701,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        system:
-          - "aarch64-linux"
-        test-tags:
-          - "containerize"
-          - "!containerize"
+        include:
+          - system: "aarch64-linux"
+            test-tags: "containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats-containerize"]
+          - system: "aarch64-linux"
+            test-tags: "!containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats"]
 
     steps:
       - name: "Checkout"
@@ -745,6 +747,16 @@ jobs:
           MATRIX_SYSTEM: ${{ matrix.system }}
           MATRIX_TEST_TAGS: ${{ matrix.test-tags }}
         run: ./.github/scripts/remote-execute-integration-tests.sh
+
+      - name: "Prepare rootless containers (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' && matrix.test-tags == 'containerize' }}
+        run: |
+          set -euo pipefail
+          # OCI guests have no udev rule to grant access to the devtmpfs TUN
+          # node. Podman's rootless network helper needs to open this device.
+          test -c /dev/net/tun
+          sudo -n chmod 0666 /dev/net/tun
+          test -r /dev/net/tun && test -w /dev/net/tun
 
       - name: "Run Bats Tests (ix, local)"
         timeout-minutes: 45
