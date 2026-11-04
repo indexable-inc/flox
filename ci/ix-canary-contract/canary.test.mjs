@@ -88,7 +88,36 @@ test('each embedded shell script parses', () => {
   }
 });
 
-const ci = YAML.parse(readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+const ciPath = process.env.CI_WORKFLOW_PATH ?? new URL('../../.github/workflows/ci.yml', import.meta.url);
+const ci = YAML.parse(readFileSync(ciPath, 'utf8'));
+const bats = ci.jobs['nix-build-bats-tests'];
+for (const [event, headRepository, cancelled, expected] of [
+  ['push', 'indexable-inc/flox', false, 'true'],
+  ['workflow_dispatch', 'indexable-inc/flox', false, 'true'],
+  ['merge_group', 'indexable-inc/flox', false, 'true'],
+  ['pull_request', 'indexable-inc/flox', false, 'true'],
+  ['pull_request', 'contributor/flox', false, 'false'],
+  ['push', 'indexable-inc/flox', true, 'false'],
+]) {
+  test(`Bats admission before package builds: ${event}, ${headRepository}, cancelled=${cancelled}`, () => {
+    const cancellation = {name: 'cancelled', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(cancelled)};
+    const condition = new Parser(new Lexer(bats.if.slice(3, -2).trim()).lex().tokens, ['github', 'needs'], [cancellation]).parse();
+    const github = {event_name: event, repository: 'indexable-inc/flox', event: {pull_request: {head: {repo: {full_name: headRepository}}}}};
+    const needs = {scope: {outputs: {heavy: 'true'}}};
+    assert.equal(new Evaluator(condition, expressionData({github, needs}), new Map([['cancelled', cancellation]])).evaluate().coerceString(), expected);
+  });
+}
+test('independent Bats lanes preserve the ARM64 test matrix and build checks', () => {
+  assert.deepEqual(bats.needs, ['scope']);
+  assert.equal(bats.if, ci.jobs['nix-build'].if);
+  assert.deepEqual(bats.strategy.matrix.include.map(row => [row.system, row['test-tags'], row['ix-runner']]), [
+    ['aarch64-linux', 'containerize', ['ix', 'arm64', 'ix-flox', 'ix-cpu-32', 'ix-bats-containerize']],
+    ['aarch64-linux', '!containerize', ['ix', 'arm64', 'ix-flox', 'ix-cpu-32', 'ix-bats']],
+  ]);
+  assert.notEqual(ci.jobs['nix-build']['continue-on-error'], true);
+  assert.notEqual(bats['continue-on-error'], true);
+  assert.ok(ci.jobs['nix-build'].steps.some(step => step.name === 'Build (ix, local)'));
+});
 const failure = {name: 'failure', minArgs: 0, maxArgs: 0, call: () => new data.BooleanData(true)};
 for (const job of ['trigger-flox-installers-workflow', 'report-failure']) {
   const condition = new Parser(new Lexer(ci.jobs[job].if.slice(3, -2).trim()).lex().tokens, ['github'], [failure]).parse();
