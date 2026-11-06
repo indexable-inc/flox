@@ -1,0 +1,118 @@
+# IX's Ubuntu runner image already provides Nix and trusts the runner user.
+# Builds execute in this VM. This action supplies the job's GitHub credential
+# and the flake's public caches, including when tests replace HOME.
+name: "Setup (ix runner)"
+description: "Prepare an ix self-hosted runner for a flox CI job."
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Report the machine"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+        echo "::group::ix runner facts"
+        echo "runner name : ${RUNNER_NAME:-<unset>}"
+        echo "nix         : $(nix --version)"
+        echo "nproc       : $(nproc)"
+        free -h | head -2 || true
+        df -h /nix /tmp || true
+        echo "--- effective nix.conf ---"
+        nix config show 2>/dev/null | grep -E '^(substituters|trusted-public-keys|max-jobs|cores|experimental-features) ' || true
+        echo "::endgroup::"
+
+    - name: "Authenticate nix flake fetches"
+      shell: "bash"
+      env:
+        # The job-scoped, ephemeral token GitHub already hands this run. It is
+        # not a repository secret and dies with the job.
+        NIX_ACCESS_TOKEN: "${{ github.token }}"
+      run: |
+        set -euo pipefail
+        umask 077
+        mkdir -p "$HOME/.config/nix"
+        # Read cache declarations without evaluating the development shell.
+        # The CI dependency cache belongs to the flake alongside its keys.
+        cache_config="$(nix eval --json --file flake.nix nixConfig)"
+        extra_caches="$(jq -er '."extra-substituters" | select(type == "array" and length > 0) | join(" ")' <<< "$cache_config")"
+        extra_keys="$(jq -er '."extra-trusted-public-keys" | select(type == "array" and length > 0) | join(" ")' <<< "$cache_config")"
+        # Rewritten, not appended: the seed disk carries $HOME across jobs, so
+        # appending would accumulate one dead token per job of the lineage.
+        # Use the flake's public caches even when the image has other defaults.
+        # Nix and the runner image own connection timeouts and retry budgets.
+        # Keep the daemon's fan-out bounded while giving each derivation the
+        # 32-core build budget available on the Graviton guest. Two concurrent
+        # derivations leave memory headroom for the runner and test processes.
+        # Run 41832230118 hit HTTP/2 stream errors with Nix's libcurl 8.21.0,
+        # then resumed a complete-length NAR at EOF and received HTTP 416.
+        # Use HTTP/1.1 until the Nix transport is verified with those transfers.
+        printf '%s\n' \
+          "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
+          "substituters = https://cache.nixos.org $extra_caches" \
+          "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= $extra_keys" \
+          "http2 = false" \
+          "max-jobs = 2" \
+          "cores = 32" \
+          > "$HOME/.config/nix/nix.conf"
+
+        # Integration tests isolate HOME. Keep their Nix clients on this job's
+        # cache configuration instead of reverting to the image's mirror.
+        export NIX_USER_CONF_FILES="$HOME/.config/nix/nix.conf"
+        printf 'NIX_USER_CONF_FILES=%s\n' "$NIX_USER_CONF_FILES" >> "$GITHUB_ENV"
+
+        if [[ "$(nix config show http2)" != false ]]; then
+          echo "::error::Nix did not apply the HTTP/1.1 cache-transfer setting" >&2
+          exit 1
+        fi
+
+        if ! nix config show 2>/dev/null | grep -q 'cache\.flox\.dev'; then
+          echo "::error title=Flox cache is unavailable::The ix runner did not accept cache.flox.dev in its client configuration; refusing a source build." >&2
+          exit 1
+        fi
+
+        nix config show | grep -E '^(max-jobs|cores) ' || {
+          echo "::error title=ix Nix parallelism is not pinned::The runner ignored the two-job, 32-core daemon settings; refusing an under-sized build." >&2
+          exit 1
+        }
+
+    - name: "Preserve plugin build artifacts"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+        # Checkout removes ignored workspace files. Keep only Meson's build
+        # directory outside it; each job reinstalls libraries into its checkout.
+        printf 'FLOX_NIX_PLUGINS_BUILD_DIR=%s/.cache/ix-ci/flox/nix-plugins\n' "$HOME" >> "$GITHUB_ENV"
+
+    - name: "Backfill hosted-image PATH parity"
+      shell: "bash"
+      run: |
+        set -euo pipefail
+
+        # Older seeds lack rev on PATH, which breaks NEF-generated builds.
+        # Link only the required util-linux tools so kill/su and other host
+        # commands are not shadowed by a whole store directory.
+        shim="$RUNNER_TEMP/ix-path-shims"
+        mkdir -p "$shim"
+        for b in rev column hexdump script getopt; do
+          src=""
+          for candidate in /nix/store/*-util-linux*/bin/"$b"; do
+            if [ -x "$candidate" ]; then
+              src="$candidate"
+              break
+            fi
+          done
+          if [ -z "$src" ] && command -v "$b" >/dev/null 2>&1; then
+            src="$(command -v "$b")"
+          fi
+          if [ -n "$src" ]; then
+            ln -sf "$src" "$shim/$b"
+          fi
+        done
+
+        if [ ! -e "$shim/rev" ]; then
+          echo "::error title=No util-linux in the guest store::could not find 'rev'; refusing to start a lane that will fail with Error 127" >&2
+          exit 1
+        fi
+
+        echo "shimmed: $(ls "$shim" 2>/dev/null | tr '\n' ' ')"
+        echo "$shim" >> "$GITHUB_PATH"

@@ -17,6 +17,11 @@ nix_options := "--extra-experimental-features nix-command \
 INPUT_DATA := "${PWD}/test_data/input_data"
 TEST_DATA := "${PWD}/test_data"
 cargo_test_invocation := "cargo nextest --profile ci run --workspace"
+# ix gives Cargo a shared target directory so warm seeds reuse compiled
+# artifacts. Keep recipes that invoke the resulting binaries on that same
+# path; the hosted default remains ./target.
+cargo_target_dir := env_var_or_default("CARGO_TARGET_DIR", "target")
+nix_plugins_build_dir := env_var_or_default("FLOX_NIX_PLUGINS_BUILD_DIR", "nix-plugins/builddir")
 
 # Set the FLOX_VERSION variable so that it can be used in the build/runtime
 # It's important to add the git revision to the version string,
@@ -49,12 +54,12 @@ version:
 
 # Build only nix-plugins
 @build-nix-plugins:
-    meson compile -C nix-plugins/builddir; \
-    meson install -C nix-plugins/builddir
+    meson compile -C "{{nix_plugins_build_dir}}"; \
+    meson install -C "{{nix_plugins_build_dir}}"
 
 # Clean the nix-plugins build cache
 @clean-nix-plugins:
-    meson compile -C nix-plugins/builddir --clean; \
+    meson compile -C "{{nix_plugins_build_dir}}" --clean; \
     rm -rf build/nix-plugins
 
 # ---------------------------------------------------------------------------- #
@@ -151,7 +156,7 @@ version:
 
 # The same as mk-data, but faster to type, and doesn't rebuild stuff
 @md +mk_data_args="":
-    mkdata="$PWD/target/debug/mk_data"; (cd test_data && "$mkdata" {{ mk_data_args }} config.toml)
+    mkdata="{{cargo_target_dir}}/debug/mk_data"; (cd test_data && "$mkdata" {{ mk_data_args }} config.toml)
 
 gen-unit-data-no-publish force="":
     #!/usr/bin/env bash
@@ -333,7 +338,7 @@ gen-unit-data-for-publish floxhub_repo_path force="": (reset-floxhub-db floxhub_
 
 # Run the nix-plugins tests
 @test-nix-plugins: build-nix-plugins
-    meson test -C nix-plugins/builddir
+    meson test -C "{{nix_plugins_build_dir}}"
 
 # Run the CLI integration test suite using locally built binaries
 
@@ -360,7 +365,7 @@ build-nef-test-fixtures:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --package nef-lock-catalog 1>&2
-    lock_bin="$PWD/target/debug/lock"
+    lock_bin="{{cargo_target_dir}}/debug/lock"
     testdata="$PWD/package-builder/nef/tests/instantiateTests/testData"
     tmpdir=$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/nef-test-fixtures.XXXXXX")")
     cp -r "$testdata"/* "$tmpdir/"
@@ -382,9 +387,11 @@ test-nef:
 test-buildenvLib:
     nix-unit buildenv/buildenvLib/tests
 
-# Run the CLI unit tests, including impure tests
+# Run the CLI unit tests, including impure tests.
+# IMPURE_TESTS_EXTRA_ARGS is an optional hook for CI to append nextest run
+# flags (e.g. --no-fail-fast); unset or empty, it expands to nothing.
 @impure-tests regex="": build
-    {{ cargo_test_invocation }} {{ regex }} --features "extra-tests"
+    {{ cargo_test_invocation }} {{ regex }} --features "extra-tests" ${IMPURE_TESTS_EXTRA_ARGS:-}
 
 # Run the entire CLI test suite
 test-cli: impure-tests integ-tests
@@ -676,12 +683,12 @@ regen-prior-release-fixtures version="auto":
 
 # Run a `flox` command
 @flox +args="": build
-    target/debug/flox {{ args }}
+    {{cargo_target_dir}}/debug/flox {{ args }}
 
 # Run a `flox` command using the catalog
 @catalog-flox +args="": build
     echo "just: DEPRECATED TARGET: Use 'flox' instead" >&2;
-    target/debug/flox {{ args }}
+    {{cargo_target_dir}}/debug/flox {{ args }}
 
 # ---------------------------------------------------------------------------- #
 

@@ -51,11 +51,13 @@ _flox_dump_state() {
       | grep -vE "$_BASH_INTERNAL_VAR_RE" \
       | grep -vE "$_TEST_HARNESS_NOISE_RE"
   } > "$out"
+  env | LC_ALL=C sort | awk '/^(LOCALE_ARCHIVE|PATH_LOCALE)=/' > "$out.locale"
 }
 
 _flox_dump_state "$1"
 
 eval "$($FLOX_BIN activate -d "$PROJECT_DIR")"
+env | LC_ALL=C sort | awk '/^(LOCALE_ARCHIVE|PATH_LOCALE)=/' > "$1.active-locale"
 # `--print-script` takes the invocation type map that `activate` recorded
 # in `_FLOX_INVOCATION_TYPES` (here: in-place). See deactivate.bats.
 eval "$($FLOX_BIN deactivate --print-script "$_FLOX_INVOCATION_TYPES")"

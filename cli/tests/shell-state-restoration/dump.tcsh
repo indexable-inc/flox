@@ -54,7 +54,10 @@ echo '=== ENV_VARS ===' >> $1
 # `setenv` prints `VAR=value`; cut at the first `=`.
 setenv | awk -F= '{print $1}' | sort -u | grep -vE "$_TEST_HARNESS_NOISE_RE" >> $1
 
+env | sort | awk '/^(LOCALE_ARCHIVE|PATH_LOCALE)=/' > "$1.locale"
+
 eval "`$FLOX_BIN activate -d $PROJECT_DIR`"
+env | sort | awk '/^(LOCALE_ARCHIVE|PATH_LOCALE)=/' > "$1.active-locale"
 # `--print-script-from-env` reads the invocation type map that `activate`
 # recorded in `_FLOX_INVOCATION_TYPES` (here: in-place) through the
 # short-lived wire variable — JSON cannot ride a tcsh backtick command
@@ -71,3 +74,5 @@ echo '=== SHELL_VARS ===' >> $2
 set | awk '{print $1}' | sort -u | grep -vE "$_TCSH_INTERNAL_VAR_RE" | grep -vE "$_TEST_HARNESS_NOISE_RE" >> $2
 echo '=== ENV_VARS ===' >> $2
 setenv | awk -F= '{print $1}' | sort -u | grep -vE "$_TEST_HARNESS_NOISE_RE" >> $2
+
+env | sort | awk '/^(LOCALE_ARCHIVE|PATH_LOCALE)=/' > "$2.locale"

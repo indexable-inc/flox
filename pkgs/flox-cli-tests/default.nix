@@ -89,7 +89,13 @@ let
     procps
     python3
     (podman.override (prev: {
-      extraPackages = [ "/run/wrappers" ];
+      # Rootless Podman needs the host's setuid newuidmap/newgidmap helpers.
+      # NixOS installs them in /run/wrappers/bin; Ubuntu uses /usr/bin.
+      # Keep these host paths inside Podman's wrapper, outside the test PATH.
+      extraPackages = [
+        "/run/wrappers"
+        "/usr"
+      ];
     }))
     "/run/wrappers"
   ]
@@ -132,7 +138,7 @@ writeShellScriptBin PROJECT_NAME ''
         exit 1;
       fi
       PROJECT_TESTS_DIR="$PROJECT_ROOT_DIR$PROJECT_TESTS_DIR";
-      PROJECT_PATH="$PROJECT_ROOT_DIR/target/debug";
+      PROJECT_PATH="''${CARGO_TARGET_DIR:-$PROJECT_ROOT_DIR/target}/debug";
     ;;
   esac
   export PROJECT_TESTS_DIR;
