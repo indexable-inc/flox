@@ -1,0 +1,28 @@
+# Self-hosted runner labels this repository's workflows may target.
+#
+# `ix` is the ix runner pool's marker label: the control plane matches a
+# queued job to a pool by looking for the pool's `runner_label` in the job's
+# `runs-on` set. The `ix-*` labels are per-lane discriminators — the pool
+# hashes the sorted label set into a "lineage" and keeps one warm seed disk
+# per lineage, so giving each lane its own second label is what stops the
+# bats lane's warm store from being clobbered by the lints lane's.
+#
+# actionlint cannot see labels that only appear inside `fromJSON(...)` in a
+# `runs-on:` expression, so this list is documentation as much as
+# configuration; keep it in sync with ci.yml and nix-managed-lints.yml.
+self-hosted-runner:
+  labels:
+    - "ix"
+    - "arm64"
+    - "ix-flox"
+    - "ix-cpu-32"
+    - "ix-scope"
+    - "ix-nix-plugins"
+    - "ix-nef"
+    - "ix-cli-unit"
+    - "ix-nix-build"
+    - "ix-bats"
+    - "ix-bats-containerize"
+    - "ix-crate2nix"
+    - "ix-lints"
+    - "ix-canary"
