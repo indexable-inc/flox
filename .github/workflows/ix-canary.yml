@@ -1,0 +1,120 @@
+# This canary proves seed promotion and warm forking end to end for its ix
+# lineage. It cannot prove the platform's fork-PR refusal: that requires a real
+# fork PR and is a platform-side test tracked in the control plane.
+name: "CI canary (ix)"
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  canary:
+    name: "Promotion and warmth"
+    # The ix-canary label gives this canary an independent seed lineage.
+    runs-on: ["ix", "arm64", "ix-flox", "ix-canary"]
+    timeout-minutes: 15
+
+    steps:
+      - name: "Probe seed warmth"
+        id: warmth
+        shell: "bash"
+        run: |
+          set -euo pipefail
+          marker="$HOME/.ix-canary/last-green"
+
+          if [[ -f "$marker" ]]; then
+            verdict="WARM"
+            warm="true"
+            previous_marker="$(<"$marker")"
+            marker_sha="$(sed -n 's/^sha=//p' "$marker")"
+            marker_epoch="$(sed -n 's/^epoch=//p' "$marker")"
+          else
+            verdict="COLD"
+            warm="false"
+            previous_marker="<none>"
+            marker_sha=""
+            marker_epoch=""
+          fi
+
+          {
+            echo "## ix canary warmth"
+            echo
+            echo "- Verdict: \`$verdict\`"
+            echo "- Runner: \`${RUNNER_NAME:-<unset>}\`"
+            echo
+            echo "Previous marker:"
+            echo '```text'
+            printf '%s\n' "$previous_marker"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "warm=$warm"
+            echo "marker_sha=$marker_sha"
+            echo "marker_epoch=$marker_epoch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "Enforce the warmth contract"
+        shell: "bash"
+        env:
+          WARM: "${{ steps.warmth.outputs.warm }}"
+          MARKER_SHA: "${{ steps.warmth.outputs.marker_sha }}"
+          MARKER_EPOCH: "${{ steps.warmth.outputs.marker_epoch }}"
+          # Manual runs can promote only from this repository's default branch.
+          CAN_PROMOTE: "${{ github.ref_name == github.event.repository.default_branch && github.event.repository.full_name == github.repository }}"
+        run: |
+          set -euo pipefail
+
+          if [[ "$WARM" != "true" ]]; then
+            if [[ "$CAN_PROMOTE" == "true" ]]; then
+              echo "::notice title=Cold ix canary bootstrap::This default-branch manual run can promote; a green finish seeds the lineage."
+              exit 0
+            fi
+            echo "::error title=Cold ix canary cannot promote::No promoted seed exists for the ix-canary lineage, and this manual run cannot create one."
+            printf '%s\n' \
+              "Run this canary manually on this repository's default branch" \
+              "to seed the lineage." \
+              "If promotion is genuinely broken, escalate to the ix platform." \
+              "Do not add a workflow workaround."
+            exit 1
+          fi
+
+          if [[ -z "$MARKER_SHA" || -z "$MARKER_EPOCH" ]]; then
+            echo "::error title=Malformed warmth marker::Marker lacks sha or epoch; the seed cannot be verified."
+            printf '%s\n' \
+              "Inspect the marker in this run's summary and the latest successful" \
+              "default-branch canary. Fix the marker writer or seed promotion" \
+              "before retrying."
+            exit 1
+          fi
+
+      # A warm disk alone is insufficient; exercise the Nix client and evaluator
+      # used by the real lanes before allowing this run to refresh the marker.
+      - name: "Exercise Nix"
+        shell: "bash"
+        run: |
+          set -euo pipefail
+          nix --version
+          result="$(nix eval --expr '1 + 1')"
+          [[ "$result" == "2" ]]
+
+      - name: "Record the green run"
+        # Explicit success gating documents that a red run must not refresh the
+        # state inherited by a future fork.
+        if: ${{ success() }}
+        shell: "bash"
+        env:
+          EVENT_NAME: "${{ github.event_name }}"
+          RUN_ID: "${{ github.run_id }}"
+          HEAD_SHA: "${{ github.sha }}"
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ix-canary"
+          printf 'run_id=%s\nevent=%s\nsha=%s\nepoch=%s\ntimestamp=%s\n' \
+            "$RUN_ID" \
+            "$EVENT_NAME" \
+            "$HEAD_SHA" \
+            "$(date -u +%s)" \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            > "$HOME/.ix-canary/last-green"

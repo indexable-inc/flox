@@ -1,0 +1,15 @@
+{
+  "name": "ix-canary-contract",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "@actions/expressions": "0.3.61",
+    "yaml": "2.8.1"
+  }
+}

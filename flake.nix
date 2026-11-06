@@ -260,6 +260,10 @@
         ca-roots = pkgs.callPackage ./checks/ca-roots.nix {
           stockCacert = nixpkgs.legacyPackages.${system}.cacert;
         };
+        dev-tool-cache = pkgs.callPackage ./checks/dev-tool-cache.nix {
+          stockPkgs = nixpkgs.legacyPackages.${system};
+        };
+        meson-reuse = pkgs.callPackage ./checks/meson-reuse.nix { };
       }) pkgsContext;
 
       # ------------------------------------------------------------------------ #

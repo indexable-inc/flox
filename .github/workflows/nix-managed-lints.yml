@@ -6,14 +6,11 @@
 
 name: "Project Lints"
 on:
-  # Contrary to the ./ci.yml workflow,
-  # this one is _not_ triggered by the `push` events
-  # or `workflow_dispatch` invocations.
-  # That is because `pre-commit` computes the diff between the current and the
-  # target branch to skip the linting of unchanged files.
-  # `push` and `workflow_dispatch` events do not provide this context.
   pull_request:
   merge_group:
+  push:
+    branches: ["ix"]
+  workflow_dispatch:
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.head_ref || github.sha }}"
@@ -21,35 +18,25 @@ concurrency:
 
 env:
   FLOX_DISABLE_METRICS: "true"
+  ON_IX: "${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository }}"
 
 jobs:
   nix-git-hooks:
     name: "Nix Git Hooks"
-    runs-on: "blacksmith-4vcpu-ubuntu-2404"
-    timeout-minutes: 30
+    # Default-branch warmups seed ix-lints without changing upstream triggers.
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.repository == 'indexable-inc/flox' && github.ref_name == github.event.repository.default_branch && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) }}
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["ix","arm64","ix-lints"]')) || 'ubuntu-latest' }}
+    # 30 -> 60: `pre-commit run` shells out to the devshell, and a cold ix
+    # machine realises that closure first.
+    timeout-minutes: 60
 
     steps:
       - name: "Checkout"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: "Create Nix store mount point"
-        run: |
-          sudo mkdir -p /nix/store
-          sudo chmod -R 777 /nix
-
-      - name: "Mount Nix store"
-        uses: useblacksmith/stickydisk@74f3f01ab1392726dd6ee06904f0452b0ec1e151 # v1
-        with:
-          key: "${{ github.repository }}-nix-${{ runner.arch }}"
-          path: "/nix"
-          # Only main saves snapshots, so a PR run can never leave a broken
-          # store behind for everyone else.
-          commit: "${{ github.ref == 'refs/heads/main' }}"
-
-      - name: "Verify Nix store"
-        run: ".github/scripts/verify-nix-store.sh"
-
+      # SKIPPED on ix; see the note on the same step in ci.yml.
       - name: "Setup Nix"
+        if: ${{ env.ON_IX != 'true' }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -58,6 +45,10 @@ jobs:
           AWS_ACCESS_KEY_ID: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_ACCESS_KEY_ID }}"
           AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
           SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
+
+      - name: "Setup Nix (ix)"
+        if: ${{ env.ON_IX == 'true' }}
+        uses: "./.github/actions/ix-setup"
 
       - name: "Determine target branch ( PR )"
         if: ${{ github.event_name == 'pull_request' }}
@@ -97,6 +88,7 @@ jobs:
       # Apparently git does not like fetching into the current branch,
       # so we fetch into temporary branches `target` and `head`.
       - name: "Fetch branches"
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         run: |
           git fetch --atomic origin \
             "$TARGET_REF:target" \
@@ -111,31 +103,32 @@ jobs:
             --manifest-path ./Cargo.toml \
             --locked;
 
-      # Run pre-commit hooks on the diff between the target branch and HEAD.
-      # The target branch and HEAD are resolved to a revision using
-      # `git rev-parse`.
+      # PRs and merge groups check their diff. Warmups check every file so the
+      # promoted seed carries Rust dependencies and the Clippy build state.
       - name: "Run Nix Git Hooks"
+        env:
+          EVENT_NAME: "${{ github.event_name }}"
         run: |
-          echo "IS_MERGE_QUEUE: $IS_MERGE_QUEUE"
-          echo "TARGET_REF: $TARGET_REF ($( git rev-parse "target" ))"
-          echo "HEAD_REF: $HEAD_REF ($( git rev-parse "head" ))"
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request|merge_group)
+              selection=(--from-ref "$(git rev-parse target)" --to-ref "$(git rev-parse head)")
+              ;;
+            push|workflow_dispatch)
+              selection=(--all-files)
+              ;;
+            *)
+              echo "Unsupported lint event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
 
           nix develop -L --no-update-lock-file --command \
             pre-commit run \
               --verbose \
               --show-diff-on-failure \
               --hook-stage manual \
-              --from-ref "$( git rev-parse "target" )" \
-              --to-ref   "$( git rev-parse "head" )";
-
-      # The sticky-disk post step must unmount /nix to commit the
-      # snapshot; the multi-user nix-daemon keeps the mount busy, so
-      # stop it as the job's last act.
-      - name: "Stop nix-daemon for sticky disk commit"
-        if: ${{ always() && runner.os == 'Linux' }}
-        run: |
-          sudo systemctl stop nix-daemon.socket nix-daemon.service 2>/dev/null || true
-          sudo pkill -9 nix-daemon 2>/dev/null || true
+              "${selection[@]}";
 
 # ---------------------------------------------------------------------------- #
 #
