@@ -1984,8 +1984,8 @@ mod pipeline_tests {
         ))
     }
 
-    fn unix_timestamp_millis(time: OffsetDateTime) -> i128 {
-        time.unix_timestamp_nanos() / 1_000_000
+    fn pipeline_test_now() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH + Duration::days(20_000)
     }
 
     fn client_with_connection(tempdir: &TempDir, connection: MockEventsConnection) -> EventsClient {
@@ -2113,21 +2113,28 @@ mod pipeline_tests {
 
     #[test]
     fn events_client_record_stamps_event_metadata() {
+        fn recording_time() -> OffsetDateTime {
+            pipeline_test_now() + Duration::microseconds(750)
+        }
+
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let mut client = client_with_connection(&tempdir, MockEventsConnection::default());
-        let before = OffsetDateTime::now_utc();
+        let mut client = client_with_connection(&tempdir, MockEventsConnection::default())
+            .with_time_source(recording_time);
 
         client
             .record_event(command_completed_kind())
             .expect("record event");
 
-        let after = OffsetDateTime::now_utc();
         let buffer = EventsBuffer::read(tempdir.path()).expect("read buffer");
         let event = buffer.iter().next().expect("one buffered event");
 
         assert_ne!(event.event_id, Uuid::nil());
-        assert!(unix_timestamp_millis(event.event_timestamp) >= unix_timestamp_millis(before));
-        assert!(unix_timestamp_millis(event.event_timestamp) <= unix_timestamp_millis(after));
+        // The wire timestamp rounds to milliseconds; truncating wall-clock
+        // bounds can reject a correctly rounded event on a fast filesystem.
+        assert_eq!(
+            event.event_timestamp,
+            pipeline_test_now() + Duration::milliseconds(1)
+        );
         assert_eq!(event.source, "cli");
         assert_eq!(event.invocation_id, INVOCATION_ID);
         assert_eq!(event.device_id, DEVICE_ID);
@@ -2208,11 +2215,12 @@ mod pipeline_tests {
             metadata,
             connection,
         )
+        .with_time_source(pipeline_test_now)
     }
 
     fn push_aged_event(tempdir: &TempDir, age: Duration) {
         let mut event = fixed_event(command_run_kind());
-        event.event_timestamp = OffsetDateTime::now_utc() - age;
+        event.event_timestamp = pipeline_test_now() - age;
         EventsBuffer::read(tempdir.path())
             .unwrap()
             .push(event)
@@ -2285,7 +2293,7 @@ mod pipeline_tests {
 
     #[test]
     fn ci_after_first_send_is_due_past_ten_seconds() {
-        for (age_secs, due) in [(5, false), (11, true)] {
+        for (age_secs, due) in [(5, false), (10, false), (11, true)] {
             let tempdir = tempfile::tempdir().unwrap();
             let client = client_after_first_send(&tempdir, &["ci"]);
             push_aged_event(&tempdir, Duration::seconds(age_secs));
@@ -2305,7 +2313,13 @@ mod pipeline_tests {
 
     #[test]
     fn non_ci_after_first_send_keeps_the_two_minute_expiry() {
-        for (age_secs, due) in [(0, false), (11, false), (119, false), (121, true)] {
+        for (age_secs, due) in [
+            (0, false),
+            (11, false),
+            (119, false),
+            (120, false),
+            (121, true),
+        ] {
             let tempdir = tempfile::tempdir().unwrap();
             let mut first =
                 client_with_sources(&tempdir, &["shell"], MockEventsConnection::default());
@@ -2325,6 +2339,34 @@ mod pipeline_tests {
                 "sent at age {age_secs}s"
             );
         }
+    }
+
+    #[test]
+    fn expiry_changes_when_the_clock_advances_not_when_buffer_io_finishes() {
+        fn after_expiry() -> OffsetDateTime {
+            pipeline_test_now() + Duration::seconds(121)
+        }
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut cached = client_after_first_send(&tempdir, &["shell"]);
+        cached.record_event(command_run_kind()).unwrap();
+        assert!(!cached.is_flush_due().unwrap());
+
+        // Reading the serialized buffer in another client must use the same
+        // instant as the cached path, regardless of scheduling or disk delays.
+        let connection = MockEventsConnection::default();
+        let sent = connection.sent_batches();
+        let mut reader = client_with_sources(&tempdir, &["shell"], connection);
+        assert!(!reader.is_flush_due().unwrap());
+        reader.try_flush(false).unwrap();
+        assert!(sent.lock().unwrap().is_empty());
+
+        cached = cached.with_time_source(after_expiry);
+        reader = reader.with_time_source(after_expiry);
+        assert!(cached.is_flush_due().unwrap());
+        assert!(reader.is_flush_due().unwrap());
+        reader.try_flush(false).unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 1);
     }
 
     #[test]
