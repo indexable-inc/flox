@@ -27,6 +27,9 @@ on:
   push:
     branches:
       - "main"
+      # The fork's default branch is `ix`, so `main` stays a clean mirror of
+      # upstream. ix promotes seeds only from green default-branch pushes.
+      - "ix"
     tags:
       - "*"
   pull_request:
@@ -46,6 +49,10 @@ env:
   # `head_ref`/`base_ref` are empty outside `pull_request`, so pushes to `main`
   # and tag pushes correctly yield "false".
   FLOX_RUNNING_RELEASE: "${{ startsWith(github.head_ref, 'release-') || startsWith(github.base_ref, 'release-') }}"
+
+  # Same-repository Linux jobs use the ARM64 ix pool. Fork pull requests stay
+  # on GitHub-hosted runners because their code is untrusted.
+  ON_IX: "${{ (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository }}"
 
 jobs:
   # Classify the change under test so the expensive jobs below can no-op on
@@ -69,7 +76,10 @@ jobs:
   # request on a status-check timeout.
   scope:
     name: "Scope"
-    runs-on: "ubuntu-latest"
+    # This classifier only reads the checkout and is part of every PR. Keep it
+    # on the ARM64 ix fleet so a hosted-runner outage cannot prevent the ix
+    # lanes from evaluating their normal scope.
+    runs-on: ["ix", "arm64", "ix-flox", "ix-scope"]
     timeout-minutes: 10
 
     # Only `pull_request` and `merge_group` can be scoped down at all; the
@@ -135,8 +145,11 @@ jobs:
 
   nix-plugins-dev:
     name: "Nix Plugins"
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-nix-plugins"]')) || matrix.os }}
+    # The first ix run is a real cold build. Once the lane has a seed, warm
+    # runs finish well below this ceiling; the larger limit prevents a cold
+    # promotion from being killed before it can establish that seed.
+    timeout-minutes: 180
 
     needs:
       - "scope"
@@ -145,20 +158,24 @@ jobs:
     # conditions below default to running whenever `scope` did not explicitly
     # report `heavy=false`, which covers a failed or skipped `scope`.
     #
-    # The push-to-main exclusion below is unrelated to `scope` and doesn't hit
-    # the branch-protection problem `scope` documents: it only applies to the
-    # `push` event, which isn't gated by required status checks (the commit
-    # already passed them in the merge queue before landing on main), so a
-    # job-level skip here is safe. Nothing here needs to warm a cache the way
-    # `cli-unit`'s Cargo cache does, so the whole job is skipped outright.
-    if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    # Default-branch pushes must run this lane: ix promotes its green machine
+    # into the lane's seed, and a skipped push would leave the lineage cold.
+    if: ${{ !cancelled() }}
 
     strategy:
       fail-fast: false
       matrix:
         os:
           - "ubuntu-22.04-8core"
-          - "macos-14-xlarge"
+
+    env:
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '0' }}"
+      CARGO_BUILD_JOBS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+      NEXTEST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+      RUST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '1') || '' }}"
 
     # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
     permissions:
@@ -179,7 +196,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core') }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -188,6 +205,10 @@ jobs:
           AWS_ACCESS_KEY_ID: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_ACCESS_KEY_ID }}"
           AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
           SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
+
+      - name: "Setup (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' }}
+        uses: "./.github/actions/ix-setup"
 
       - name: "Build"
         if: ${{ needs.scope.outputs.heavy != 'false' }}
@@ -199,16 +220,25 @@ jobs:
 
   nef-dev:
     name: "Nix expression tests"
-    # Skip on push to main; already run in the merge queue. Safe as a job-level
-    # skip (see `nix-plugins-dev`): `push` isn't subject to required status
-    # checks, so this doesn't hit the branch-protection issue `scope` guards
-    # against.
-    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-    runs-on: "ubuntu-22.04-8core"
-    timeout-minutes: 15 # eval only tests should be plenty fast
+    # Default-branch pushes refresh this lane's ix seed.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ ((((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-nef"]')) || 'ubuntu-22.04-8core' }}
+    # The first ix run still has to materialize the Flox devshell. Warm runs
+    # are short, but a cold seed must have the same bootstrap budget as the
+    # build lanes or it can never promote.
+    timeout-minutes: 180
 
     permissions:
       contents: read
+
+    env:
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '32') || '0' }}"
+      CARGO_BUILD_JOBS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '32') || '' }}"
+      NEXTEST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '32') || '' }}"
+      RUST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '32') || '' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && '1') || '' }}"
 
     steps:
       - name: "Checkout"
@@ -223,6 +253,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
+        if: ${{ !((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -232,6 +263,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
           SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
 
+      - name: "Setup (ix)"
+        if: ${{ ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: "./.github/actions/ix-setup"
+
       - name: "Test NEF"
         run: nix develop -L --no-update-lock-file --command just test-nef
 
@@ -240,8 +275,8 @@ jobs:
 
   cli-unit:
     name: "unit"
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-cli-unit"]')) || matrix.os }}
+    timeout-minutes: 180
 
     needs:
       - "scope"
@@ -258,6 +293,7 @@ jobs:
     if: ${{ !cancelled() }}
 
     permissions:
+      contents: read
       id-token: write # Needed for CodeCov
 
     strategy:
@@ -265,7 +301,15 @@ jobs:
       matrix:
         os:
           - "ubuntu-22.04-8core"
-          - "macos-14-xlarge"
+
+    env:
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '0' }}"
+      CARGO_BUILD_JOBS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+      NEXTEST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+      RUST_TEST_THREADS: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '32') || '' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' && '1') || '' }}"
 
     steps:
       - name: "Checkout"
@@ -280,7 +324,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core') }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -290,8 +334,12 @@ jobs:
           AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
           SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
 
+      - name: "Setup (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core' }}
+        uses: "./.github/actions/ix-setup"
+
       - name: "Cache Cargo"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-22.04-8core') }}
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
@@ -308,22 +356,20 @@ jobs:
         run: nix develop -L --no-update-lock-file --command just build-cli
 
       - name: "CLI Unit Tests"
-        # Only run unit tests if when not running specialized integration tests
-        # Also skip on push to main; already run in the merge queue. The
-        # "Build" step above still runs unconditionally (subject only to
-        # `scope`) so the Cargo cache above stays warm for new branches to
-        # restore from — caches are only ever written by the job that ran
-        # them, so without a job running here on main, `restore-keys` would
-        # never have anything fresh to fall back to.
+        # Upstream validates pushes in its merge queue. The IX fork runs the
+        # tests on default-branch pushes too, so its seed includes test builds.
         id: unit-tests
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         env:
           RUST_BACKTRACE: 1
-        run: nix develop -L --no-update-lock-file --command just impure-tests
+          IMPURE_TESTS_EXTRA_ARGS: "--no-fail-fast"
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          nix develop -L --no-update-lock-file --command just impure-tests
 
       - name: "Check schemas are up to date"
-        # Skip on push to main; already run in the merge queue.
-        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        # Keep the fork's seed-building push equivalent to its measured repeat.
+        if: ${{ needs.scope.outputs.heavy != 'false' && !(github.repository == 'flox/flox' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         run: |
           nix develop -L --no-update-lock-file --command just gen-schemas
           if ! git diff --quiet cli/schemas; then
@@ -343,23 +389,28 @@ jobs:
     # See `scope`: `!cancelled()` keeps the pre-existing fork condition as the
     # *only* reason this job is ever skipped.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 120
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-nix-build"]')) || 'ubuntu-latest' }}
+    timeout-minutes: 180
 
     needs:
       - "scope"
 
     permissions:
+      contents: read
       id-token: write # Needed for AWS Creds
+
+    env:
+      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux') }}"
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '32') || '0' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
 
     strategy:
       fail-fast: false
       matrix:
         system:
-          - "x86_64-linux"
-          - "x86_64-darwin"
           - "aarch64-linux"
-          - "aarch64-darwin"
 
     steps:
       - name: "Checkout"
@@ -377,7 +428,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -392,8 +443,12 @@ jobs:
           SYSTEM: "${{ matrix.system }}"
           SETUP_NIX: "false"
 
+      - name: "Setup (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        uses: "./.github/actions/ix-setup"
+
       - name: "Configure AWS Credentials"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
         with:
           role-to-assume: "arn:aws:iam::759020684799:role/github-oidc-role-flox-cache-public"
@@ -404,7 +459,7 @@ jobs:
 
       - name: "Build"
         id: "build"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         env:
           # S3 on purpose, not R2: this is the destination the builders
           # publish the product closures to, and cache.flox.dev serves them
@@ -423,6 +478,18 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: "Build (ix, local)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        env:
+          NIX_SUBSTITUTER: "${{ vars.MANAGED_CACHE_PUBLIC_S3_BUCKET }}"
+          NIX_SUBSTITUTER_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_SECRET_KEY }}"
+        run: |
+          for package in 'checks.${{ matrix.system }}.dev-tool-cache' 'packages.${{ matrix.system }}.flox-nix-plugins' 'packages.${{ matrix.system }}.flox-cli' 'packages.${{ matrix.system }}.flox' 'packages.${{ matrix.system }}.flox-cli-tests'; do
+            echo "::group::Building $package"
+            ./.github/scripts/ix-local-nix-build.sh "$package" "$NIX_SUBSTITUTER"
+            echo "::endgroup::"
+          done
+
   nix-build-crate2nix:
     name: "crate2nix build"
     # Builds the crate2nix packages the same way `nix-build` builds the crane
@@ -431,23 +498,28 @@ jobs:
     # Same fork restriction as `nix-build`: this job needs the AWS OIDC and
     # Tailscale secrets to reach the builders.
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 120
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && fromJSON('["ix","arm64","ix-flox","ix-cpu-32","ix-crate2nix"]')) || 'ubuntu-latest' }}
+    timeout-minutes: 180
 
     needs:
       - "scope"
 
     permissions:
+      contents: read
       id-token: write # Needed for AWS Creds
+
+    env:
+      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux') }}"
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '32') || '0' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
 
     strategy:
       fail-fast: false
       matrix:
         system:
-          - "x86_64-linux"
-          - "x86_64-darwin"
           - "aarch64-linux"
-          - "aarch64-darwin"
 
     steps:
       - name: "Checkout"
@@ -465,7 +537,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -480,8 +552,12 @@ jobs:
           SYSTEM: "${{ matrix.system }}"
           SETUP_NIX: "false"
 
+      - name: "Setup (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        uses: "./.github/actions/ix-setup"
+
       - name: "Configure AWS Credentials"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
         with:
           role-to-assume: "arn:aws:iam::759020684799:role/github-oidc-role-flox-cache-public"
@@ -491,7 +567,7 @@ jobs:
           unset-current-credentials: true
 
       - name: "Build"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         env:
           NIX_SUBSTITUTER: "${{ vars.MANAGED_CACHE_PUBLIC_S3_BUCKET }}"
           NIX_SUBSTITUTER_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_SECRET_KEY }}"
@@ -507,9 +583,21 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: "Build (ix, local)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        env:
+          NIX_SUBSTITUTER: "${{ vars.MANAGED_CACHE_PUBLIC_S3_BUCKET }}"
+          NIX_SUBSTITUTER_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_SECRET_KEY }}"
+        run: |
+          for package in 'packages.${{ matrix.system }}.crate2nix-flox' 'packages.${{ matrix.system }}.crate2nix-flox-activations' 'packages.${{ matrix.system }}.crate2nix-nef-lock-catalog'; do
+            echo "::group::Building $package"
+            ./.github/scripts/ix-local-nix-build.sh "$package" "$NIX_SUBSTITUTER"
+            echo "::endgroup::"
+          done
+
   trigger-flox-installers-workflow:
     name: "Build installers"
-    if: ${{ (github.base_ref == 'refs/heads/main' || github.ref == 'refs/heads/main') && github.event_name == 'push' }}
+    if: ${{ github.repository == 'flox/flox' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
     runs-on: "ubuntu-latest"
     timeout-minutes: 120
 
@@ -545,13 +633,11 @@ jobs:
     runs-on: "ubuntu-latest"
     timeout-minutes: 30
 
-    if: ${{ failure() && (github.base_ref == 'refs/heads/main' || github.ref == 'refs/heads/main') && github.event_name == 'push' }}
+    if: ${{ failure() && github.repository == 'flox/flox' && github.ref_name == github.event.repository.default_branch && github.event_name == 'push' }}
 
-    # nix-build and cli-unit still run on push to main (see their `if`
-    # conditions); nix-plugins-dev, nef-dev, and nix-build-bats-tests are
-    # skipped there, so they're dropped from `needs` — a skipped job's result
-    # isn't a `failure()` anyway, but keeping stale deps out avoids implying
-    # they're expected to run.
+    # All ix lanes now run on the default-branch push so their seeds can
+    # refresh. Keep the notification dependencies narrow to the jobs that
+    # determine the release path.
     needs:
       - "nix-build"
       - "cli-unit"
@@ -578,50 +664,41 @@ jobs:
           SLACK_LINK_NAMES: true
 
   nix-build-bats-tests:
-    name: "remote"
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 90
+    name: "remote (${{ matrix.system }}, ${{ matrix.test-tags }})"
+    runs-on: ${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && matrix.ix-runner) || 'ubuntu-latest' }}
+    # This lane also participates in the first seed promotion. Give a cold
+    # ARM64 build the same ceiling as the other ix lanes.
+    timeout-minutes: 180
 
     permissions:
+      contents: read
       id-token: write # Needed for CodeCov
+
+    env:
+      IX_LEG: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux') }}"
+      NIX_BUILD_CORES: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '32') || '0' }}"
+
+      __NIXOS_SET_ENVIRONMENT_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
+      __ETC_PROFILE_DONE: "${{ (((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) && matrix.system == 'aarch64-linux' && '1') || '' }}"
 
     needs:
       - "scope"
-      - "nix-build"
 
-    # See `scope`. Spelled out rather than left implicit because without a
-    # status-check function GitHub adds `success()` over *every* `needs`:
-    # `nix-build` succeeding is the only precondition, exactly as before, and a
-    # skipped `nix-build` (fork PR) still skips this job.
-    #
-    # Also skipped outright on push to main; already run in the merge queue.
-    # See `nix-plugins-dev` for why a job-level skip is safe here specifically
-    # for the `push` event.
-    if: ${{ !cancelled() && needs.nix-build.result == 'success' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    # Each ARM64 ix VM builds its own flox-cli-tests closure with nix run.
+    # The separate build job publishes no outputs on this fork and remains
+    # an independent workflow check. Keep its same-repository trust guard.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
 
     strategy:
       fail-fast: false
       matrix:
-        system:
-          - "x86_64-linux"
-          - "x86_64-darwin"
-          - "aarch64-linux"
-          - "aarch64-darwin"
-        test-tags:
-          - "containerize"
-          - "!containerize"
-        exclude:
-          # Skip containerize tests on x86_64-darwin (except the ones enabled in the include section below)
-          - system: "x86_64-darwin"
         include:
-          # Disable containerize and activation tests on x86_64-darwin
-          # Containerize tests are run through rosetta, and thus are slow and dont necessarily represent real usage.
-          # Activation tests are taking the largest part of test runtime (up to ~10 minutes)
-          # we disable these in an effort to speed up CI.
-          # We assume that activation is sufficiently tested on macos through aarch64-darwin
-          # and on x86_64-darwin through the remaining integration tests
-          - system: "x86_64-darwin"
-            test-tags: "!containerize,!activate"
+          - system: "aarch64-linux"
+            test-tags: "containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats-containerize"]
+          - system: "aarch64-linux"
+            test-tags: "!containerize"
+            ix-runner: ["ix", "arm64", "ix-flox", "ix-cpu-32", "ix-bats"]
 
     steps:
       - name: "Checkout"
@@ -636,7 +713,7 @@ jobs:
           wait-timeout-minutes: 15
 
       - name: "Setup"
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         uses: "./.github/actions/common-setup"
         with:
           GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
@@ -650,10 +727,32 @@ jobs:
           REMOTE_BUILDERS: "${{ vars.MANAGED_REMOTE_BUILDERS }}"
           SYSTEM: "${{ matrix.system }}"
 
+      - name: "Setup (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        uses: "./.github/actions/ix-setup"
+
       - name: "Run Bats Tests (./#flox-cli-tests)"
         timeout-minutes: 30
-        if: ${{ needs.scope.outputs.heavy != 'false' }}
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG != 'true' }}
         env:
           MATRIX_SYSTEM: ${{ matrix.system }}
           MATRIX_TEST_TAGS: ${{ matrix.test-tags }}
         run: ./.github/scripts/remote-execute-integration-tests.sh
+
+      - name: "Prepare rootless containers (ix)"
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' && matrix.test-tags == 'containerize' }}
+        run: |
+          set -euo pipefail
+          # OCI guests have no udev rule to grant access to the devtmpfs TUN
+          # node. Podman's rootless network helper needs to open this device.
+          test -c /dev/net/tun
+          sudo -n chmod 0666 /dev/net/tun
+          test -r /dev/net/tun && test -w /dev/net/tun
+
+      - name: "Run Bats Tests (ix, local)"
+        timeout-minutes: 45
+        if: ${{ needs.scope.outputs.heavy != 'false' && env.IX_LEG == 'true' }}
+        env:
+          MATRIX_SYSTEM: ${{ matrix.system }}
+          MATRIX_TEST_TAGS: ${{ matrix.test-tags }}
+        run: ./.github/scripts/ix-local-integration-tests.sh

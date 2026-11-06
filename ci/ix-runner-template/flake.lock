@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "ix-runner-template": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787244634,
+        "narHash": "sha256-XsQcRufT3MxhzwQlrC8Xq0xUU8F+S/5NwrauBXfnGnY=",
+        "owner": "indexable-inc",
+        "repo": "index",
+        "rev": "f3f39a0184d992aeab7d909e0b3acf65ac8a3c24",
+        "type": "github"
+      },
+      "original": {
+        "owner": "indexable-inc",
+        "repo": "index",
+        "rev": "f3f39a0184d992aeab7d909e0b3acf65ac8a3c24",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1787135253,
+        "narHash": "sha256-RD2kNWCG+Bjo6h+JVjWVNntZs2GtRoeY2xHjts/FNkA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "ffb3c9b700e759be2ef13237c9d8f953b32a1e46",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "ix-runner-template": "ix-runner-template",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
