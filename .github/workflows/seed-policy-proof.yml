@@ -19,7 +19,7 @@ jobs:
   restore:
     runs-on: [ix, arm64, ix-flox, ix-cpu-32, ix-nef]
     timeout-minutes: 10
-    # isolated trusted push proof
+    # same repository branch trusted read-only proof
     env:
       require_memory: ${{ !contains(github.event.head_commit.message, '[seed-bootstrap]') }}
       expected_seed: ${{ github.event_name == 'pull_request' && 'clean' || 'trusted' }}
