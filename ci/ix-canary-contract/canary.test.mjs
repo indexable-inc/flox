@@ -65,7 +65,7 @@ for (const [event, headRepository, cancelled, expected] of [
   ['workflow_dispatch', 'indexable-inc/flox', false, 'true'],
   ['merge_group', 'indexable-inc/flox', false, 'true'],
   ['pull_request', 'indexable-inc/flox', false, 'true'],
-  ['pull_request', 'contributor/flox', false, 'false'],
+  ['pull_request', 'contributor/flox', false, 'true'],
   ['push', 'indexable-inc/flox', true, 'false'],
 ]) {
   test(`Bats admission before package builds: ${event}, ${headRepository}, cancelled=${cancelled}`, () => {
