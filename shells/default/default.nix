@@ -22,6 +22,7 @@
   shfmt,
   stdenv,
   treefmt,
+  util-linux,
   writeShellScript,
   yamlfmt,
   yq,
@@ -58,6 +59,7 @@ let
       pstree
       shfmt
       treefmt
+      util-linux
       yamlfmt
       yq
     ];

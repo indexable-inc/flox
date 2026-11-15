@@ -89,7 +89,13 @@ let
     procps
     python3
     (podman.override (prev: {
-      extraPackages = [ "/run/wrappers" ];
+      # Rootless Podman needs the host's setuid newuidmap/newgidmap helpers.
+      # NixOS installs them in /run/wrappers/bin; Ubuntu uses /usr/bin.
+      # Keep these host paths inside Podman's wrapper, outside the test PATH.
+      extraPackages = [
+        "/run/wrappers"
+        "/usr"
+      ];
     }))
     "/run/wrappers"
   ]
