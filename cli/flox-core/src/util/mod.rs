@@ -57,18 +57,17 @@ pub const LOCALE: (&str, &str) = ("LOCALE_ARCHIVE", env!("LOCALE_ARCHIVE"));
 ///
 /// The own-default clause exists because this function returns an export
 /// map for another process rather than changing the environment in place.
-/// flox applies the map to its own process at startup, then spawns
-/// `flox-activations`, which computes the map again to decide what the
-/// activation exports. Without the clause the child would take the
-/// parent's default for the user's value and export nothing, and an
-/// in-place activation would leave the shell without it. The installer's
-/// wrapper needs no such clause: it changes its own environment and execs,
-/// so its value simply persists. The clause also holds when
+/// An installer wrapper can apply these defaults before execing flox.
+/// Without the clause, flox would take the wrapper's default for the
+/// user's value and export nothing into an in-place activation. Flox
+/// itself records the caller's values before applying defaults and gives
+/// those values to `flox-activations`, so its restore diff can distinguish
+/// an absent caller value from a bootstrap default. The clause also holds when
 /// `SSL_CERT_FILE` has appeared since the parent decided. On Linux the TLS
 /// library flox uses probes the system trust store on first use and writes
 /// `SSL_CERT_FILE` and `SSL_CERT_DIR` into the process; flox records the
 /// two before that can happen and hands the record to everything it
-/// spawns (see [`capture_startup_tls_env`]), so the child sees them only
+/// spawns (see [`capture_startup_env`]), so the child sees them only
 /// as the user left them. One consequence: a user who exports
 /// `SSL_CERT_FILE` inside an activated shell still gets
 /// `NIX_SSL_CERT_FILE` re-exported by nested activations, so to redirect
@@ -114,18 +113,19 @@ pub fn default_nix_env_vars() -> HashMap<&'static str, String> {
 /// it spawns must not inherit them either.
 const PROBED_TLS_VARS: [&str; 2] = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
 
-static STARTUP_TLS_ENV: OnceLock<Vec<(&'static str, Option<OsString>)>> = OnceLock::new();
+static STARTUP_ENV: OnceLock<Vec<(&'static str, Option<OsString>)>> = OnceLock::new();
 
-/// Record `SSL_CERT_FILE` and `SSL_CERT_DIR` as they were when flox
-/// started. Call this first thing in `main`, before Sentry, any HTTP
-/// client or the async runtime, so that the record predates the probe.
-pub fn capture_startup_tls_env() {
-    let _ = STARTUP_TLS_ENV.set(
+/// Record the variables changed by TLS probing or Nix defaults before
+/// either runs. Activation needs the caller's values for its restore diff.
+pub fn capture_startup_env() {
+    STARTUP_ENV.get_or_init(|| {
         PROBED_TLS_VARS
             .iter()
-            .map(|&name| (name, env::var_os(name)))
-            .collect(),
-    );
+            .copied()
+            .chain(default_nix_env_vars().into_keys())
+            .map(|name| (name, env::var_os(name)))
+            .collect()
+    });
 }
 
 /// Give `command` the startup state of `SSL_CERT_FILE` and `SSL_CERT_DIR`,
@@ -134,12 +134,26 @@ pub fn capture_startup_tls_env() {
 /// does not inherit values the TLS library wrote into this process since.
 /// Apply it before any environment the user controls, so a hook's export
 /// of either variable still wins. Does nothing if
-/// [`capture_startup_tls_env`] was never called.
+/// [`capture_startup_env`] was never called.
 pub fn restore_startup_tls_env(command: &mut Command) {
-    let Some(startup) = STARTUP_TLS_ENV.get() else {
+    restore_startup_env(command, false);
+}
+
+/// Give the activation process the caller's environment before bootstrap.
+/// It reapplies Nix defaults after capturing the deactivation baseline, so
+/// a default absent from the caller is removed when the activation ends.
+pub fn restore_startup_activation_env(command: &mut Command) {
+    restore_startup_env(command, true);
+}
+
+fn restore_startup_env(command: &mut Command, include_nix_defaults: bool) {
+    let Some(startup) = STARTUP_ENV.get() else {
         return;
     };
     for (name, value) in startup {
+        if !include_nix_defaults && !PROBED_TLS_VARS.contains(name) {
+            continue;
+        }
         match value {
             Some(value) => {
                 command.env(name, value);
@@ -297,8 +311,13 @@ mod tests {
     #[test]
     fn restore_gives_children_the_startup_tls_env() {
         temp_env::with_vars(
-            [("SSL_CERT_FILE", None::<&str>), ("SSL_CERT_DIR", Some(""))],
-            capture_startup_tls_env,
+            [
+                ("SSL_CERT_FILE", None::<&str>),
+                ("SSL_CERT_DIR", Some("")),
+                ("NIX_SSL_CERT_FILE", None),
+                (LOCALE.0, None),
+            ],
+            capture_startup_env,
         );
         // As if the probe ran since.
         let mut command = Command::new("true");
@@ -319,5 +338,13 @@ mod tests {
             ),
         ]);
         assert_eq!(envs, expected);
+
+        // Activation snapshots the caller before reapplying defaults. Other
+        // child processes above must retain the defaults they need to run.
+        command.env(LOCALE.0, LOCALE.1);
+        restore_startup_activation_env(&mut command);
+        let envs: HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(envs[std::ffi::OsStr::new(LOCALE.0)], None);
+        assert_eq!(envs[std::ffi::OsStr::new("NIX_SSL_CERT_FILE")], None);
     }
 }
