@@ -14,6 +14,10 @@ on:
   # `push` and `workflow_dispatch` events do not provide this context.
   pull_request:
   merge_group:
+  # ix: a default-branch run lints every file so its seed carries the
+  # Clippy build state for later pull requests.
+  push:
+    branches: ["ix", "ix-port-*"]
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.head_ref || github.sha }}"
@@ -25,7 +29,7 @@ env:
 jobs:
   nix-git-hooks:
     name: "Nix Git Hooks"
-    runs-on: "ubuntu-latest"
+    runs-on: ["ix", "arm64", "ix-lints"]
     timeout-minutes: 30
 
     steps:
@@ -33,14 +37,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "Setup Nix"
-        uses: "./.github/actions/common-setup"
-        with:
-          GITHUB_ACCESS_TOKEN: "${{ secrets.MANAGED_FLOXBOT_GITHUB_ACCESS_TOKEN_REPO_SCOPE }}"
-          SUBSTITUTER: "${{ vars.MANAGED_CACHE_PUBLIC_R2_BUCKET }}"
-          SUBSTITUTER_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_SECRET_KEY }}"
-          AWS_ACCESS_KEY_ID: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_ACCESS_KEY_ID }}"
-          AWS_SECRET_ACCESS_KEY: "${{ secrets.MANAGED_CACHE_PUBLIC_R2_SECRET_ACCESS_KEY }}"
-          SSH_KEY: "${{ secrets.MANAGED_FLOXBOT_SSH_KEY }}"
+        uses: "./.github/actions/ix-setup"
 
       - name: "Determine target branch ( PR )"
         if: ${{ github.event_name == 'pull_request' }}
@@ -80,6 +77,7 @@ jobs:
       # Apparently git does not like fetching into the current branch,
       # so we fetch into temporary branches `target` and `head`.
       - name: "Fetch branches"
+        if: ${{ github.event_name != 'push' }}
         run: |
           git fetch --atomic origin \
             "$TARGET_REF:target" \
@@ -98,6 +96,7 @@ jobs:
       # The target branch and HEAD are resolved to a revision using
       # `git rev-parse`.
       - name: "Run Nix Git Hooks"
+        if: ${{ github.event_name != 'push' }}
         run: |
           echo "IS_MERGE_QUEUE: $IS_MERGE_QUEUE"
           echo "TARGET_REF: $TARGET_REF ($( git rev-parse "target" ))"
@@ -110,6 +109,12 @@ jobs:
               --hook-stage manual \
               --from-ref "$( git rev-parse "target" )" \
               --to-ref   "$( git rev-parse "head" )";
+
+      - name: "Run Nix Git Hooks (all files)"
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          nix develop -L --no-update-lock-file --command \
+            pre-commit run --verbose --show-diff-on-failure --hook-stage manual --all-files
 
 # ---------------------------------------------------------------------------- #
 #

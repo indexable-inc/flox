@@ -1,0 +1,38 @@
+# The ix runner image already provides Nix and trusts the runner user, and
+# builds run in the job's VM, so this replaces common-setup's Nix install,
+# remote builders and cache credentials.
+name: "Setup (ix runner)"
+description: "Prepare an ix runner for a flox CI job."
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Configure Nix"
+      shell: "bash"
+      env:
+        # The job's own ephemeral token, not a repository secret.
+        NIX_ACCESS_TOKEN: "${{ github.token }}"
+      run: |
+        set -euo pipefail
+        umask 077
+        mkdir -p "$HOME/.config/nix"
+        cache_config="$(nix eval --json --file flake.nix nixConfig)"
+        extra_caches="$(jq -er '."extra-substituters" | join(" ")' <<< "$cache_config")"
+        extra_keys="$(jq -er '."extra-trusted-public-keys" | join(" ")' <<< "$cache_config")"
+        # Rewritten, not appended: a seed carries $HOME from job to job.
+        # http2 = false: Nix's libcurl hit HTTP/2 stream errors and a 416 on
+        # resumed NAR downloads (run 41832230118).
+        # Two derivations at a time with all 32 cores each.
+        printf '%s\n' \
+          "access-tokens = github.com=$NIX_ACCESS_TOKEN" \
+          "substituters = https://cache.nixos.org $extra_caches" \
+          "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= $extra_keys" \
+          "http2 = false" \
+          "max-jobs = 2" \
+          "cores = 32" \
+          > "$HOME/.config/nix/nix.conf"
+        # Integration tests replace HOME; keep their Nix clients on this file.
+        echo "NIX_USER_CONF_FILES=$HOME/.config/nix/nix.conf" >> "$GITHUB_ENV"
+        # actions/checkout cleans ignored files, so keep Meson's build
+        # directory outside the workspace, next to the runner's CARGO_TARGET_DIR.
+        echo "FLOX_NIX_PLUGINS_BUILD_DIR=$HOME/.cache/ix-ci/flox/nix-plugins" >> "$GITHUB_ENV"
